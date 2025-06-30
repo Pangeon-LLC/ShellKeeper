@@ -1,0 +1,37 @@
+#!/bin/bash
+# Debug script to see what's happening with prompts
+
+echo "=== ShellKeeper Debug Info ==="
+echo "Shell: $SHELL"
+echo "ZSH_VERSION: $ZSH_VERSION"
+echo "BASH_VERSION: $BASH_VERSION"
+echo ""
+echo "=== Environment ==="
+echo "SHELLKEEPER_SESSION: $SHELLKEEPER_SESSION"
+echo "SHELLKEEPER_SOCKET: $SHELLKEEPER_SOCKET"
+echo ""
+echo "=== Prompt Variables ==="
+echo "PS1: '$PS1'"
+echo "PROMPT: '$PROMPT'"
+echo "ZSH_THEME: '$ZSH_THEME'"
+echo ""
+echo "=== Functions ==="
+echo "precmd functions: $(typeset -f precmd 2>/dev/null | head -1)"
+echo "add-zsh-hook available: $(type add-zsh-hook 2>/dev/null | head -1)"
+echo "__sk_update_prompt defined: $(type __sk_update_prompt 2>/dev/null | head -1)"
+echo ""
+echo "=== Which prompt variable does your shell use? ==="
+if [ -n "$ZSH_VERSION" ]; then
+    echo "Testing PROMPT..."
+    OLD_PROMPT="$PROMPT"
+    export PROMPT="TEST> "
+    echo -n "If you see TEST> before this line, you use PROMPT"
+    export PROMPT="$OLD_PROMPT"
+    echo ""
+    
+    echo "Testing PS1..."
+    OLD_PS1="$PS1"
+    export PS1="TEST2> "
+    echo -n "If you see TEST2> before this line, you use PS1"
+    export PS1="$OLD_PS1"
+fi

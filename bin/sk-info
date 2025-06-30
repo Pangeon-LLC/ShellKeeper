@@ -1,0 +1,11 @@
+#!/bin/bash
+# ShellKeeper Info - Check if you're in a ShellKeeper session
+
+if [ -n "$SHELLKEEPER_SESSION" ]; then
+    echo "✓ You are in ShellKeeper session: $SHELLKEEPER_SESSION"
+    echo "  Socket: $SHELLKEEPER_SOCKET"
+    echo "  Detach with: Ctrl+\\"
+else
+    echo "✗ You are NOT in a ShellKeeper session"
+    echo "  Run 'sk' or 'sk new' to create one"
+fi

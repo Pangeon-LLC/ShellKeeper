@@ -1,0 +1,45 @@
+#!/bin/bash
+# ShellKeeper Prompt Helper - Updates prompt in existing sessions
+
+if [ -n "$SHELLKEEPER_SESSION" ]; then
+    if [ -n "$BASH_VERSION" ]; then
+        # Bash - prepend to PS1 if not already there
+        if [[ "$PS1" != *"[$SHELLKEEPER_SESSION]"* ]]; then
+            export PS1="[$SHELLKEEPER_SESSION] ${PS1:-\u@\h:\w\$ }"
+            echo "✓ Prompt updated with session name"
+        else
+            echo "✓ Prompt already shows session name"
+        fi
+    elif [ -n "$ZSH_VERSION" ]; then
+        # Zsh - handle different prompt variables
+        if [[ -n "$ZSH_THEME" ]]; then
+            # oh-my-zsh user - modify PROMPT
+            if [[ "$PROMPT" != *"[$SHELLKEEPER_SESSION]"* ]]; then
+                export PROMPT="[$SHELLKEEPER_SESSION] ${PROMPT}"
+                echo "✓ Prompt updated with session name (oh-my-zsh)"
+            else
+                echo "✓ Prompt already shows session name"
+            fi
+        elif [[ -n "$PROMPT" ]]; then
+            # Using PROMPT variable
+            if [[ "$PROMPT" != *"[$SHELLKEEPER_SESSION]"* ]]; then
+                export PROMPT="[$SHELLKEEPER_SESSION] ${PROMPT}"
+                echo "✓ Prompt updated with session name"
+            else
+                echo "✓ Prompt already shows session name"
+            fi
+        else
+            # Using PS1 (less common in zsh)
+            if [[ "$PS1" != *"[$SHELLKEEPER_SESSION]"* ]]; then
+                export PS1="[$SHELLKEEPER_SESSION] ${PS1:-%n@%m:%~%# }"
+                echo "✓ Prompt updated with session name (PS1)"
+            else
+                echo "✓ Prompt already shows session name"
+            fi
+        fi
+    else
+        echo "⚠️  Unknown shell - manually set PS1 to include [$SHELLKEEPER_SESSION]"
+    fi
+else
+    echo "✗ Not in a ShellKeeper session"
+fi

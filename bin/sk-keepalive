@@ -1,0 +1,55 @@
+#!/bin/bash
+# ShellKeeper keepalive daemon
+# Sends periodic silent signals to prevent disconnection due to inactivity
+
+# Default interval (seconds)
+INTERVAL=${SK_KEEPALIVE_INTERVAL:-60}
+
+# PID file location
+PIDFILE="/tmp/sk-keepalive-${SHELLKEEPER_SESSION:-unknown}.pid"
+
+# Function to clean up on exit
+cleanup() {
+    rm -f "$PIDFILE"
+    exit 0
+}
+
+# Set up signal handlers
+trap cleanup EXIT TERM INT
+
+# Check if already running for this session
+if [ -f "$PIDFILE" ]; then
+    OLD_PID=$(cat "$PIDFILE" 2>/dev/null)
+    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+        echo "ShellKeeper keepalive already running for this session (PID: $OLD_PID)"
+        exit 0
+    fi
+fi
+
+# Save our PID
+echo $$ > "$PIDFILE"
+
+# Run in background
+{
+    while true; do
+        # Send a silent signal - update terminal title with null operation
+        # This is completely invisible to the user but keeps the connection active
+        printf '\033]0;\007' 2>/dev/null
+        
+        # Alternative methods (commented out, but available if needed):
+        # Send null byte to /dev/null
+        # printf '\0' >/dev/null 2>&1
+        
+        # Update session's socket modification time
+        # if [ -n "$SHELLKEEPER_SOCKET" ] && [ -e "$SHELLKEEPER_SOCKET" ]; then
+        #     touch -c "$SHELLKEEPER_SOCKET" 2>/dev/null
+        # fi
+        
+        sleep "$INTERVAL"
+    done
+} &
+
+# Detach from terminal
+disown
+
+echo "ShellKeeper keepalive started (PID: $$, interval: ${INTERVAL}s)"

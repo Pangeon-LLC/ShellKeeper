@@ -1,0 +1,25 @@
+#!/bin/bash
+# Stop the ShellKeeper keepalive daemon for current session
+
+PIDFILE="/tmp/sk-keepalive-${SHELLKEEPER_SESSION:-unknown}.pid"
+
+if [ ! -f "$PIDFILE" ]; then
+    echo "No keepalive process found for this session"
+    exit 1
+fi
+
+PID=$(cat "$PIDFILE" 2>/dev/null)
+if [ -z "$PID" ]; then
+    echo "Invalid PID file"
+    rm -f "$PIDFILE"
+    exit 1
+fi
+
+if kill -0 "$PID" 2>/dev/null; then
+    kill "$PID"
+    rm -f "$PIDFILE"
+    echo "ShellKeeper keepalive stopped (PID: $PID)"
+else
+    echo "Keepalive process not running (stale PID file removed)"
+    rm -f "$PIDFILE"
+fi

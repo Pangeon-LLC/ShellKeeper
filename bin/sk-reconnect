@@ -1,0 +1,73 @@
+#!/bin/bash
+# ShellKeeper auto-reconnect script
+# This script helps automatically reconnect to your last session after disconnection
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo -e "${GREEN}ShellKeeper Auto-Reconnect${NC}"
+echo "=============================="
+
+# Check if we're already in a session
+if [ -n "$SHELLKEEPER_SESSION" ]; then
+    echo -e "${YELLOW}Warning: You are already in session '$SHELLKEEPER_SESSION'${NC}"
+    echo "Detach first with Ctrl+\\ before reconnecting to another session."
+    exit 1
+fi
+
+# Get list of sessions
+sessions=$("$SCRIPT_DIR/sk" ls 2>/dev/null | grep -E '^\s+\S+' | awk '{print $1}')
+
+if [ -z "$sessions" ]; then
+    echo -e "${RED}No active ShellKeeper sessions found.${NC}"
+    echo ""
+    echo "Create a new session with:"
+    echo "  sk new [name]"
+    exit 1
+fi
+
+# Count sessions
+session_count=$(echo "$sessions" | wc -l)
+
+if [ "$session_count" -eq 1 ]; then
+    # Only one session, attach to it
+    session_name=$(echo "$sessions" | head -1)
+    echo -e "Found 1 session: ${GREEN}$session_name${NC}"
+    echo "Reconnecting..."
+    exec "$SCRIPT_DIR/sk" attach "$session_name"
+else
+    # Multiple sessions, show the most recent
+    recent_session=$("$SCRIPT_DIR/sk" ls 2>/dev/null | grep -E '^\s+\S+' | head -1 | awk '{print $1}')
+    echo -e "Found $session_count sessions. Most recent: ${GREEN}$recent_session${NC}"
+    echo ""
+    echo "Options:"
+    echo "  1. Press ENTER to reconnect to '$recent_session'"
+    echo "  2. Type a session name to reconnect to a specific session"
+    echo "  3. Type 'list' to see all sessions"
+    echo "  4. Press Ctrl+C to cancel"
+    echo ""
+    read -p "Your choice: " choice
+    
+    if [ -z "$choice" ]; then
+        # Empty input, use most recent
+        echo "Reconnecting to most recent session..."
+        exec "$SCRIPT_DIR/sk" attach "$recent_session"
+    elif [ "$choice" = "list" ]; then
+        # Show all sessions
+        "$SCRIPT_DIR/sk" ls
+        echo ""
+        read -p "Enter session name to connect: " session_name
+        if [ -n "$session_name" ]; then
+            exec "$SCRIPT_DIR/sk" attach "$session_name"
+        fi
+    else
+        # User typed a session name
+        exec "$SCRIPT_DIR/sk" attach "$choice"
+    fi
+fi
