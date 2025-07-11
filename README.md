@@ -8,7 +8,7 @@ Traditional terminal multiplexers like GNU Screen and tmux are powerful, but the
 
 ## The Solution
 
-ShellKeeper leverages `dtach` - a minimal program that only does session management without terminal emulation. This means:
+ShellKeeper leverages `dtach` - a minimal program that only does session management without terminal emulation. Written in pure shell (Zsh) with no Python dependencies, ShellKeeper provides:
 
 - ✅ **Native terminal scrolling works perfectly** - Use your mouse wheel, trackpad, or scrollbar just like normal
 - ✅ **Persistent sessions** - Survive SSH disconnections, network issues, or accidental terminal closures  
@@ -40,7 +40,7 @@ sk last     # Explicitly attach to last session
 
 ### Prerequisites
 
-ShellKeeper requires `dtach` (the minimal session backend):
+ShellKeeper only requires `dtach` - no Python or other dependencies:
 
 ```bash
 # Ubuntu/Debian
@@ -71,19 +71,13 @@ cd ShellKeeper
 export PATH="$PATH:$(pwd)/bin"
 ```
 
-3. Set up the enhanced prompt (optional but recommended):
-```bash
-# This adds [sk:sessionname] to your prompt
-./lib/setup-sk-prompt.sh
-```
-
-4. Load convenient aliases (optional):
+3. Load convenient aliases (optional):
 ```bash
 # Add to ~/.bashrc or ~/.zshrc  
 source $(pwd)/lib/shellkeeper-aliases.sh
 ```
 
-5. Reload your shell:
+4. Reload your shell:
 ```bash
 exec $SHELL
 ```

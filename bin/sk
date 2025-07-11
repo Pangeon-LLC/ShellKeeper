@@ -4,53 +4,7 @@
 # Resolve the real path in case this is a symlink
 REAL_SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(dirname "$REAL_SCRIPT")"
-PYTHON_SCRIPT="$SCRIPT_DIR/shellkeeper.py"
+SK_SCRIPT="$SCRIPT_DIR/shellkeeper"
 
-# If no arguments, try to attach to most recent session or create new one
-if [ $# -eq 0 ]; then
-    # Check if any sessions exist
-    if python3 "$PYTHON_SCRIPT" list | grep -q "No active sessions"; then
-        echo "No active sessions. Creating new session..."
-        python3 "$PYTHON_SCRIPT" new
-    else
-        python3 "$PYTHON_SCRIPT"
-    fi
-    exit $?
-fi
-
-# Handle quick shortcuts
-case "$1" in
-    h|help|-h|--help)
-        python3 "$PYTHON_SCRIPT" --help
-        ;;
-    l|ls)
-        python3 "$PYTHON_SCRIPT" list
-        ;;
-    n|new)
-        shift
-        python3 "$PYTHON_SCRIPT" new "$@"
-        ;;
-    a|attach)
-        shift
-        python3 "$PYTHON_SCRIPT" attach "$@"
-        ;;
-    k|kill)
-        shift
-        python3 "$PYTHON_SCRIPT" kill "$@"
-        ;;
-    r|rename)
-        shift
-        python3 "$PYTHON_SCRIPT" rename "$@"
-        ;;
-    c|clean)
-        python3 "$PYTHON_SCRIPT" clean
-        ;;
-    *)
-        # If single argument that's not a command, assume it's a session name to attach
-        if [ $# -eq 1 ]; then
-            python3 "$PYTHON_SCRIPT" attach "$1"
-        else
-            python3 "$PYTHON_SCRIPT" "$@"
-        fi
-        ;;
-esac
+# Forward all arguments to the new shell implementation
+exec "$SK_SCRIPT" "$@"

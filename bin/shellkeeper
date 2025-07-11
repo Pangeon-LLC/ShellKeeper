@@ -1,0 +1,382 @@
+#!/usr/bin/env zsh
+# ShellKeeper - Pure shell implementation
+# A terminal session manager with native scrolling support
+
+# Set strict mode
+setopt ERR_EXIT
+setopt PIPE_FAIL
+setopt NO_UNSET
+
+# Configuration
+SK_DIR="${HOME}/.shellkeeper"
+SK_SESSION_DIR="${SK_DIR}/sessions"
+SK_CONFIG="${SK_DIR}/config"
+
+# Colors
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[0;33m'
+NC='\033[0m'
+
+# Initialize directories
+init_shellkeeper() {
+    mkdir -p "${SK_SESSION_DIR}"
+    
+    # Create default config if it doesn't exist
+    if [[ ! -f "${SK_CONFIG}" ]]; then
+        cat > "${SK_CONFIG}" <<EOF
+# ShellKeeper Configuration
+DEFAULT_SHELL=${SHELL:-/bin/zsh}
+KEEPALIVE_ENABLED=true
+KEEPALIVE_INTERVAL=60
+EOF
+    fi
+}
+
+# Load configuration
+load_config() {
+    if [[ -f "${SK_CONFIG}" ]]; then
+        source "${SK_CONFIG}"
+    else
+        DEFAULT_SHELL=${SHELL:-/bin/zsh}
+        KEEPALIVE_ENABLED=true
+        KEEPALIVE_INTERVAL=60
+    fi
+}
+
+# Check if dtach is installed
+check_dependencies() {
+    if ! command -v dtach &> /dev/null; then
+        echo -e "${RED}ERROR: dtach is not installed!${NC}"
+        echo -e "\nInstall dtach using:"
+        echo -e "  Ubuntu/Debian: sudo apt-get install dtach"
+        echo -e "  Fedora/RHEL:  sudo dnf install dtach"
+        echo -e "  macOS:        brew install dtach"
+        echo -e "  From source:  https://github.com/crigler/dtach"
+        exit 1
+    fi
+}
+
+# Get socket path for a session
+get_socket_path() {
+    local session_name="$1"
+    echo "${SK_SESSION_DIR}/${session_name}.sock"
+}
+
+# Check if session is alive
+is_session_alive() {
+    local socket_path="$1"
+    [[ -S "${socket_path}" ]] || return 1
+    
+    # Try to check if socket is responsive
+    if command -v socat &> /dev/null; then
+        timeout 0.1 socat - UNIX-CONNECT:"${socket_path}" < /dev/null &> /dev/null
+        return $?
+    else
+        # Fallback: just check if socket exists
+        return 0
+    fi
+}
+
+# List all sessions
+list_sessions() {
+    local found_session=false
+    
+    echo "Active sessions:"
+    for socket in "${SK_SESSION_DIR}"/*.sock(N); do
+        [[ -e "${socket}" ]] || continue
+        
+        local session_name="${socket:t:r}"
+        local socket_path="${socket}"
+        
+        if is_session_alive "${socket_path}"; then
+            local mtime=$(stat -f '%m' "${socket_path}" 2>/dev/null || stat -c '%Y' "${socket_path}" 2>/dev/null)
+            local mtime_human=$(date -r "${mtime}" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -d "@${mtime}" '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
+            printf "  %-20s (last active: %s)\n" "${session_name}" "${mtime_human}"
+            found_session=true
+        else
+            # Remove dead socket
+            rm -f "${socket_path}"
+        fi
+    done
+    
+    if [[ "${found_session}" == "false" ]]; then
+        echo "  No active sessions"
+    fi
+}
+
+# Create a new session
+create_session() {
+    local session_name="$1"
+    
+    # Generate name if not provided
+    if [[ -z "${session_name}" ]]; then
+        session_name="session-$(date +%Y%m%d-%H%M%S)"
+    fi
+    
+    local socket_path=$(get_socket_path "${session_name}")
+    
+    if [[ -e "${socket_path}" ]]; then
+        echo -e "${RED}Session '${session_name}' already exists${NC}"
+        return 1
+    fi
+    
+    echo "Creating session: ${session_name}"
+    echo -e "${YELLOW}*** DETACH WITH Ctrl+\\ (NOT Ctrl+C) ***${NC}"
+    
+    # Create wrapper script for the session
+    local wrapper_script=$(mktemp /tmp/sk_wrapper_XXXXXX)
+    chmod +x "${wrapper_script}"
+    
+    # Detect shell type
+    local shell_name="${DEFAULT_SHELL:t}"
+    
+    # Check if sk-prompt is configured
+    local sk_prompt_configured=false
+    local rcfile="${HOME}/.${shell_name}rc"
+    [[ -f "${rcfile}" ]] && grep -q "sk-prompt" "${rcfile}" && sk_prompt_configured=true
+    
+    cat > "${wrapper_script}" <<EOF
+#!/usr/bin/env zsh
+export SHELLKEEPER_SESSION="${session_name}"
+export SHELLKEEPER_SOCKET="${socket_path}"
+export SK_KEEPALIVE_ENABLED="${KEEPALIVE_ENABLED}"
+export SK_KEEPALIVE_INTERVAL="${KEEPALIVE_INTERVAL}"
+
+EOF
+
+    if [[ "${sk_prompt_configured}" == "false" ]]; then
+        # Add prompt setup inline
+        if [[ "${shell_name}" == "bash" ]]; then
+            cat >> "${wrapper_script}" <<EOF
+# Set up prompt for bash
+TEMP_RC="/tmp/sk_bashrc_\${SHELLKEEPER_SESSION}_\$\$"
+cat > "\${TEMP_RC}" <<'BASHRC'
+[[ -f ~/.bashrc ]] && source ~/.bashrc
+[[ "\$PS1" != *"[\${SHELLKEEPER_SESSION}]"* ]] && export PS1="[\${SHELLKEEPER_SESSION}] \${PS1:-\\u@\\h:\\w\\$ }"
+BASHRC
+exec ${DEFAULT_SHELL} --rcfile "\${TEMP_RC}"
+EOF
+        elif [[ "${shell_name}" == "zsh" ]]; then
+            cat >> "${wrapper_script}" <<EOF
+# Set up prompt for zsh
+TEMP_RC="/tmp/sk_zshrc_\${SHELLKEEPER_SESSION}_\$\$"
+cat > "\${TEMP_RC}" <<'ZSHRC'
+[[ -f ~/.zshrc ]] && source ~/.zshrc
+if [[ -n "\$PROMPT" ]] && [[ "\$PROMPT" != *"[\${SHELLKEEPER_SESSION}]"* ]]; then
+    export PROMPT="[\${SHELLKEEPER_SESSION}] \$PROMPT"
+elif [[ -n "\$PS1" ]] && [[ "\$PS1" != *"[\${SHELLKEEPER_SESSION}]"* ]]; then
+    export PS1="[\${SHELLKEEPER_SESSION}] \$PS1"
+fi
+ZSHRC
+export ZDOTDIR=/tmp
+exec ${DEFAULT_SHELL} -c "source \${TEMP_RC}; exec ${DEFAULT_SHELL}"
+EOF
+        else
+            echo "exec ${DEFAULT_SHELL}" >> "${wrapper_script}"
+        fi
+    else
+        echo "exec ${DEFAULT_SHELL}" >> "${wrapper_script}"
+    fi
+    
+    # Create the dtach session
+    dtach -c "${socket_path}" -e '^\\' -r winch "${wrapper_script}"
+    
+    # Clean up
+    rm -f "${wrapper_script}"
+    rm -f /tmp/sk_*rc_${session_name}_*
+}
+
+# Attach to a session
+attach_session() {
+    local session_name="$1"
+    local socket_path=$(get_socket_path "${session_name}")
+    
+    if [[ ! -e "${socket_path}" ]]; then
+        echo -e "${RED}Session '${session_name}' not found${NC}"
+        return 1
+    fi
+    
+    echo "Attaching to session: ${session_name}"
+    echo -e "${YELLOW}*** DETACH WITH Ctrl+\\ (NOT Ctrl+C) ***${NC}"
+    
+    export SHELLKEEPER_SESSION="${session_name}"
+    export SHELLKEEPER_SOCKET="${socket_path}"
+    
+    dtach -a "${socket_path}" -e '^\\' -r winch
+}
+
+# Kill a session
+kill_session() {
+    local session_name="$1"
+    local socket_path=$(get_socket_path "${session_name}")
+    
+    if [[ ! -e "${socket_path}" ]]; then
+        echo -e "${RED}Session '${session_name}' not found${NC}"
+        return 1
+    fi
+    
+    rm -f "${socket_path}"
+    echo "Session '${session_name}' killed"
+}
+
+# Rename a session
+rename_session() {
+    local old_name="$1"
+    local new_name="$2"
+    local old_socket=$(get_socket_path "${old_name}")
+    local new_socket=$(get_socket_path "${new_name}")
+    
+    if [[ ! -e "${old_socket}" ]]; then
+        echo -e "${RED}Session '${old_name}' not found${NC}"
+        return 1
+    fi
+    
+    if [[ -e "${new_socket}" ]]; then
+        echo -e "${RED}Session '${new_name}' already exists${NC}"
+        return 1
+    fi
+    
+    mv "${old_socket}" "${new_socket}"
+    echo "Session renamed: ${old_name} -> ${new_name}"
+}
+
+# Clean dead sessions
+clean_sessions() {
+    echo "Cleaning up dead sessions..."
+    for socket in "${SK_SESSION_DIR}"/*.sock(N); do
+        [[ -e "${socket}" ]] || continue
+        if ! is_session_alive "${socket}"; then
+            rm -f "${socket}"
+            echo "Removed dead session: ${socket:t:r}"
+        fi
+    done
+    echo "Done."
+}
+
+# Get most recent session
+get_most_recent_session() {
+    local most_recent=""
+    local most_recent_time=0
+    
+    for socket in "${SK_SESSION_DIR}"/*.sock(N); do
+        [[ -e "${socket}" ]] || continue
+        if is_session_alive "${socket}"; then
+            local mtime=$(stat -f '%m' "${socket}" 2>/dev/null || stat -c '%Y' "${socket}" 2>/dev/null)
+            if [[ ${mtime} -gt ${most_recent_time} ]]; then
+                most_recent_time=${mtime}
+                most_recent="${socket:t:r}"
+            fi
+        fi
+    done
+    
+    echo "${most_recent}"
+}
+
+# Show usage
+usage() {
+    cat <<EOF
+ShellKeeper - Terminal session manager with native scrolling
+
+Usage:
+  sk new [name]          Create new session (auto-named if no name given)
+  sk ls|list             List all sessions
+  sk attach|a <name>     Attach to named session
+  sk kill <name>         Kill a session
+  sk rename <old> <new>  Rename a session
+  sk clean               Clean up dead sessions
+  sk last                Attach to most recent session
+  sk help|-h|--help      Show this help
+  sk <name>              Shortcut to attach to session
+
+Inside a session:
+  Ctrl+\\                 Detach from session (keeps it running)
+  Ctrl+C                 KILLS the session - use Ctrl+\\ instead!
+  exit                   Terminate session completely
+
+Examples:
+  sk new                 Create auto-named session
+  sk new project         Create session named 'project'
+  sk project             Attach to session 'project'
+  sk ls                  List all sessions
+  sk kill project        Kill session 'project'
+EOF
+}
+
+# Main entry point
+main() {
+    init_shellkeeper
+    load_config
+    check_dependencies
+    
+    local command="${1:-}"
+    shift || true
+    
+    case "${command}" in
+        new|create)
+            create_session "$@"
+            ;;
+        ls|list)
+            list_sessions
+            ;;
+        attach|a)
+            if [[ $# -eq 0 ]]; then
+                echo -e "${RED}Error: session name required${NC}"
+                exit 1
+            fi
+            attach_session "$@"
+            ;;
+        kill)
+            if [[ $# -eq 0 ]]; then
+                echo -e "${RED}Error: session name required${NC}"
+                exit 1
+            fi
+            kill_session "$@"
+            ;;
+        rename)
+            if [[ $# -ne 2 ]]; then
+                echo -e "${RED}Error: usage: sk rename <old_name> <new_name>${NC}"
+                exit 1
+            fi
+            rename_session "$@"
+            ;;
+        clean)
+            clean_sessions
+            ;;
+        last)
+            local recent=$(get_most_recent_session)
+            if [[ -n "${recent}" ]]; then
+                echo "Attaching to most recent session: ${recent}"
+                attach_session "${recent}"
+            else
+                echo "No active sessions found"
+            fi
+            ;;
+        help|-h|--help)
+            usage
+            ;;
+        "")
+            # No command - attach to most recent or show help
+            local recent=$(get_most_recent_session)
+            if [[ -n "${recent}" ]]; then
+                echo "No command specified. Attaching to most recent session: ${recent}"
+                attach_session "${recent}"
+            else
+                usage
+            fi
+            ;;
+        *)
+            # Try to attach to session with this name
+            if [[ -e "$(get_socket_path "${command}")" ]]; then
+                attach_session "${command}"
+            else
+                echo -e "${RED}Unknown command or session: ${command}${NC}"
+                echo "Run 'sk help' for usage"
+                exit 1
+            fi
+            ;;
+    esac
+}
+
+# Run main
+main "$@"

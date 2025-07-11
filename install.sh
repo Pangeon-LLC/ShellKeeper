@@ -1,7 +1,11 @@
 #!/bin/bash
 
 # ShellKeeper Installation Script
-# This script sets up ShellKeeper to be available as 'sk' in your PATH
+# This script:
+# - Installs dtach if needed
+# - Sets up ShellKeeper to be available as 'sk' in your PATH
+# - Configures automatic session prompts showing [session-name]
+# - No Python required - pure shell implementation
 
 set -e
 
@@ -95,6 +99,43 @@ if command -v sk &> /dev/null; then
 else
     echo -e "${RED}Note: sk command will be available after reloading your shell${NC}"
 fi
+
+echo ""
+echo "Setting up automatic session prompt..."
+
+# Get the SK bin directory
+SK_BIN_DIR="$SCRIPT_DIR/bin"
+
+# Add to .zshrc if not already there
+if [ -f "$HOME/.zshrc" ]; then
+    if ! grep -q "sk-prompt" "$HOME/.zshrc" 2>/dev/null; then
+        echo "" >> "$HOME/.zshrc"
+        echo "# ShellKeeper automatic prompt" >> "$HOME/.zshrc"
+        echo 'if [ -n "$SHELLKEEPER_SESSION" ]; then' >> "$HOME/.zshrc"
+        echo "    source $SK_BIN_DIR/sk-prompt >/dev/null 2>&1" >> "$HOME/.zshrc"
+        echo 'fi' >> "$HOME/.zshrc"
+        echo -e "${GREEN}✓ Added SK prompt to ~/.zshrc${NC}"
+    else
+        echo -e "${GREEN}✓ SK prompt already in ~/.zshrc${NC}"
+    fi
+fi
+
+# Add to .bashrc if not already there  
+if [ -f "$HOME/.bashrc" ]; then
+    if ! grep -q "sk-prompt" "$HOME/.bashrc" 2>/dev/null; then
+        echo "" >> "$HOME/.bashrc"
+        echo "# ShellKeeper automatic prompt" >> "$HOME/.bashrc"
+        echo 'if [ -n "$SHELLKEEPER_SESSION" ]; then' >> "$HOME/.bashrc"
+        echo "    source $SK_BIN_DIR/sk-prompt >/dev/null 2>&1" >> "$HOME/.bashrc"
+        echo 'fi' >> "$HOME/.bashrc"
+        echo -e "${GREEN}✓ Added SK prompt to ~/.bashrc${NC}"
+    else
+        echo -e "${GREEN}✓ SK prompt already in ~/.bashrc${NC}"
+    fi
+fi
+
+echo -e "${GREEN}✓ Session prompt setup complete!${NC}"
+echo "New SK sessions will automatically show [session-name] in the prompt"
 
 echo ""
 echo "Usage: sk [create|attach|ls|kill] [session-name]"
