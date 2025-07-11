@@ -374,14 +374,18 @@ Check if in session:
             print("No active sessions found")
     
     else:
-        # If no command, show usage or attach to last session
-        sessions = sk.list_sessions()
-        if sessions and len(sys.argv) == 1:
-            # Auto-attach to most recent session
-            print(f"No command specified. Attaching to most recent session: {sessions[0]['name']}")
-            sk.attach_session(sessions[0]['name'])
-        else:
+        # Check if user is asking for help
+        if len(sys.argv) > 1 and sys.argv[1] in ['-h', '--help', 'help']:
             parser.print_help()
+        else:
+            # If no command, show usage or attach to last session
+            sessions = sk.list_sessions()
+            if sessions and len(sys.argv) == 1:
+                # Auto-attach to most recent session
+                print(f"No command specified. Attaching to most recent session: {sessions[0]['name']}")
+                sk.attach_session(sessions[0]['name'])
+            else:
+                parser.print_help()
 
 if __name__ == "__main__":
     main()
