@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.2.0 (2026-01-21)
+
+### New Features
+
+- **Session Notes**: Add notes to sessions for context
+  - `sk note <session> "working on auth"` - Add a note
+  - `sk note <session>` - Clear the note
+  - Notes are displayed in `sk ls` output
+
+- **Bulk Kill**: Kill multiple sessions at once
+  - `sk kill --all` - Kill all sessions
+  - `sk kill --pattern="test-*"` - Kill sessions matching a glob pattern
+
+- **Idle Cleanup**: Automatically remove old sessions
+  - `sk cleanup <days>` - Remove sessions idle for more than N days
+
+- **Relative Time**: `sk ls` now shows relative time ("2h ago") instead of timestamps
+
+- **Shell Completion**: Tab completion for bash and zsh
+  - Bash: `source lib/sk-completion.bash`
+  - Zsh: `source lib/sk-completion.zsh`
+
+---
+
 ## v2.1.0 (2026-01-21)
 
 ### New Features

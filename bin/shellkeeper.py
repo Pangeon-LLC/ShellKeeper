@@ -18,8 +18,33 @@ import json
 import random
 import string
 import re
+import fnmatch
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
+
+
+def relative_time(dt):
+    """Convert datetime to relative time string like '2h ago'"""
+    if isinstance(dt, str):
+        dt = datetime.fromisoformat(dt)
+
+    now = datetime.now()
+    diff = now - dt
+
+    seconds = diff.total_seconds()
+    if seconds < 60:
+        return "just now"
+    elif seconds < 3600:
+        mins = int(seconds / 60)
+        return f"{mins}m ago"
+    elif seconds < 86400:
+        hours = int(seconds / 3600)
+        return f"{hours}h ago"
+    elif seconds < 604800:
+        days = int(seconds / 86400)
+        return f"{days}d ago"
+    else:
+        return dt.strftime("%Y-%m-%d")
 
 
 class SessionMetadata:
@@ -62,6 +87,18 @@ class SessionMetadata:
     def get(self, session_name):
         """Get metadata for a session"""
         return self.data.get(session_name, {})
+
+    def set_note(self, session_name, note):
+        """Set or update a note for a session"""
+        if session_name in self.data:
+            self.data[session_name]["note"] = note
+            self._save()
+            return True
+        return False
+
+    def get_note(self, session_name):
+        """Get note for a session"""
+        return self.data.get(session_name, {}).get("note")
 
     def remove(self, session_name):
         """Remove metadata for a session"""
@@ -539,6 +576,50 @@ exec {self.config["default_shell"]}
         print(f"Session '{session_name}' killed")
         return True
 
+    def kill_sessions_by_pattern(self, pattern):
+        """Kill sessions matching a glob pattern"""
+        sessions = self.list_sessions(clean_dead=False)
+        killed = []
+        for session in sessions:
+            if fnmatch.fnmatch(session["name"], pattern):
+                self.kill_session(session["name"])
+                killed.append(session["name"])
+        return killed
+
+    def kill_all_sessions(self):
+        """Kill all sessions"""
+        sessions = self.list_sessions(clean_dead=False)
+        killed = []
+        for session in sessions:
+            self.kill_session(session["name"])
+            killed.append(session["name"])
+        return killed
+
+    def cleanup_idle_sessions(self, max_idle_days):
+        """Remove sessions that have been idle for more than max_idle_days"""
+        sessions = self.list_sessions(clean_dead=False)
+        cutoff = datetime.now() - timedelta(days=max_idle_days)
+        removed = []
+
+        for session in sessions:
+            meta = self.metadata.get(session["name"])
+            last_attached_str = meta.get("last_attached")
+            if last_attached_str:
+                last_attached = datetime.fromisoformat(last_attached_str)
+                if last_attached < cutoff:
+                    self.kill_session(session["name"])
+                    removed.append(session["name"])
+
+        return removed
+
+    def set_session_note(self, session_name, note):
+        """Set a note on a session"""
+        socket_path = self.get_socket_path(session_name)
+        if not socket_path.exists():
+            print(f"Session '{session_name}' not found")
+            return False
+        return self.metadata.set_note(session_name, note)
+
     def rename_session(self, old_name, new_name):
         """Rename a session"""
         old_socket = self.get_socket_path(old_name)
@@ -783,7 +864,9 @@ Inside a session:
 
     # Kill session
     kill_parser = subparsers.add_parser("kill", help="Kill session")
-    kill_parser.add_argument("name", help="Session name")
+    kill_parser.add_argument("name", nargs="?", help="Session name")
+    kill_parser.add_argument("--all", "-a", action="store_true", help="Kill all sessions")
+    kill_parser.add_argument("--pattern", "-p", help="Kill sessions matching glob pattern (e.g., 'test-*')")
 
     # Rename session
     rename_parser = subparsers.add_parser("rename", help="Rename session")
@@ -799,6 +882,15 @@ Inside a session:
     # Session info
     info_parser = subparsers.add_parser("info", help="Show session details")
     info_parser.add_argument("name", nargs="?", help="Session name (current if not provided)")
+
+    # Session note
+    note_parser = subparsers.add_parser("note", help="Add a note to a session")
+    note_parser.add_argument("name", help="Session name")
+    note_parser.add_argument("text", nargs="?", help="Note text (omit to clear)")
+
+    # Cleanup idle sessions
+    cleanup_parser = subparsers.add_parser("cleanup", help="Remove sessions idle for N days")
+    cleanup_parser.add_argument("days", type=int, help="Max idle days (sessions older are removed)")
 
     # Restore session
     restore_parser = subparsers.add_parser("restore", help="Restore session in new terminal")
@@ -852,8 +944,20 @@ Inside a session:
         else:
             print("Active sessions:")
             for session in sessions:
+                meta = sk.metadata.get(session["name"])
                 profile_str = f" [{session['profile_name']}]" if session.get('profile_name') else ""
-                print(f"  {session['name']:<30}{profile_str:<20} (last: {session['last_active']})")
+
+                # Get relative time from last_attached
+                last_attached = meta.get("last_attached")
+                if last_attached:
+                    time_str = relative_time(last_attached)
+                else:
+                    time_str = session['last_active']
+
+                note = meta.get("note")
+                note_str = f' "{note}"' if note else ""
+
+                print(f"  {session['name']:<30}{profile_str:<20} ({time_str}){note_str}")
 
     elif args.command in ["new", "create"]:
         sk.create_session(args.name, profile_name=args.profile, match_current=args.match)
@@ -862,7 +966,23 @@ Inside a session:
         sk.attach_session(args.name)
 
     elif args.command == "kill":
-        sk.kill_session(args.name)
+        if args.all:
+            killed = sk.kill_all_sessions()
+            if killed:
+                print(f"Killed {len(killed)} session(s)")
+            else:
+                print("No sessions to kill")
+        elif args.pattern:
+            killed = sk.kill_sessions_by_pattern(args.pattern)
+            if killed:
+                print(f"Killed {len(killed)} session(s) matching '{args.pattern}'")
+            else:
+                print(f"No sessions matching '{args.pattern}'")
+        elif args.name:
+            sk.kill_session(args.name)
+        else:
+            print("Specify a session name, --all, or --pattern")
+            sys.exit(1)
 
     elif args.command == "rename":
         sk.rename_session(args.old_name, args.new_name)
@@ -896,8 +1016,34 @@ Inside a session:
             print(f"  Profile UUID: {info.get('profile_uuid') or 'none'}")
             print(f"  Created: {info.get('created') or 'unknown'}")
             print(f"  Last attached: {info.get('last_attached') or 'unknown'}")
+            meta = sk.metadata.get(session_name)
+            if meta.get("note"):
+                print(f"  Note: {meta['note']}")
         else:
             print(f"Session '{session_name}' not found")
+
+    elif args.command == "note":
+        if args.text:
+            if sk.set_session_note(args.name, args.text):
+                print(f"Note set for '{args.name}': {args.text}")
+            else:
+                sys.exit(1)
+        else:
+            # Clear note
+            if sk.metadata.set_note(args.name, None):
+                print(f"Note cleared for '{args.name}'")
+            else:
+                print(f"Session '{args.name}' not found")
+                sys.exit(1)
+
+    elif args.command == "cleanup":
+        removed = sk.cleanup_idle_sessions(args.days)
+        if removed:
+            print(f"Removed {len(removed)} session(s) idle for more than {args.days} day(s):")
+            for name in removed:
+                print(f"  {name}")
+        else:
+            print(f"No sessions idle for more than {args.days} day(s)")
 
     elif args.command == "restore":
         if args.name:

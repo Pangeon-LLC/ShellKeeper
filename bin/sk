@@ -49,6 +49,14 @@ case "$1" in
         shift
         python3 "$PYTHON_SCRIPT" info "$@"
         ;;
+    note)
+        shift
+        python3 "$PYTHON_SCRIPT" note "$@"
+        ;;
+    cleanup)
+        shift
+        python3 "$PYTHON_SCRIPT" cleanup "$@"
+        ;;
     t|term|terminal)
         shift
         python3 "$PYTHON_SCRIPT" terminal "$@"

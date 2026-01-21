@@ -1,4 +1,4 @@
-.TH SK 1 "January 2026" "ShellKeeper 2.1" "User Commands"
+.TH SK 1 "January 2026" "ShellKeeper 2.2" "User Commands"
 .SH NAME
 sk \- terminal session manager with native scrolling
 .SH SYNOPSIS
@@ -33,6 +33,12 @@ Attach to the most recently used session.
 .B sk kill \fIname\fR
 Terminate a session.
 .TP
+.B sk kill \fB--all\fR
+Kill all active sessions.
+.TP
+.B sk kill \fB--pattern\fR=\fIPATTERN\fR
+Kill sessions matching a glob pattern (e.g., "test-*").
+.TP
 .B sk rename \fIoldname\fR \fInewname\fR
 Rename a session. Updates both the socket file and metadata.
 .TP
@@ -42,6 +48,13 @@ Remove dead session sockets and orphaned metadata.
 .B sk info \fR[\fIname\fR]
 Show detailed information about a session (profile, creation time, socket path).
 If no name is given, shows info for the current session.
+.TP
+.B sk note \fIname\fR \fR[\fItext\fR]
+Add a note to a session. The note is displayed in \fBsk ls\fR output.
+Omit text to clear the note.
+.TP
+.B sk cleanup \fIdays\fR
+Remove sessions that have been idle for more than the specified number of days.
 .SS Terminal & Profile Commands
 .TP
 .B sk terminal \fR[\fB--profile\fR=\fINAME\fR] [\fB--match\fR]
