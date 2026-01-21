@@ -1,96 +1,98 @@
 #!/bin/bash
 # ShellKeeper Installation Script
 # Safe to run multiple times - idempotent
-#
-# Installs sk command via symlink to ~/.local/bin (no .zshrc changes needed)
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOCAL_BIN="$HOME/.local/bin"
 
-echo "=== ShellKeeper Installation ==="
+# Colors
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+DIM='\033[2m'
+NC='\033[0m' # No Color
+
+# Symbols
+CHECK="${GREEN}✓${NC}"
+ARROW="${BLUE}→${NC}"
+
+echo ""
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BLUE}  ShellKeeper Installer${NC}"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
 # 1. Check/install dtach
-echo "Checking for dtach..."
+echo -e "${ARROW} Checking dtach..."
 if command -v dtach &>/dev/null; then
-    echo "  [OK] dtach is installed"
+    echo -e "  ${CHECK} dtach installed"
 else
-    echo "  Installing dtach..."
+    echo -e "  ${YELLOW}Installing dtach...${NC}"
     if command -v apt-get &>/dev/null; then
-        sudo apt-get update && sudo apt-get install -y dtach
+        sudo apt-get update -qq && sudo apt-get install -y -qq dtach
     elif command -v dnf &>/dev/null; then
-        sudo dnf install -y dtach
+        sudo dnf install -y -q dtach
     elif command -v brew &>/dev/null; then
         brew install dtach
     else
-        echo "  [ERROR] Could not install dtach. Please install manually."
+        echo -e "  ${YELLOW}Could not install dtach. Please install manually.${NC}"
         exit 1
     fi
-    echo "  [OK] dtach installed"
+    echo -e "  ${CHECK} dtach installed"
 fi
 
 # 2. Enable loginctl linger (Linux only)
 if [ "$(uname)" = "Linux" ]; then
-    echo "Checking loginctl linger..."
+    echo -e "${ARROW} Checking session persistence..."
     if loginctl show-user "$USER" 2>/dev/null | grep -q "Linger=yes"; then
-        echo "  [OK] Linger already enabled"
+        echo -e "  ${CHECK} Linger enabled"
     else
-        echo "  Enabling linger for $USER..."
+        echo -e "  ${YELLOW}Enabling linger...${NC}"
         sudo loginctl enable-linger "$USER"
-        echo "  [OK] Linger enabled"
+        echo -e "  ${CHECK} Linger enabled"
     fi
 fi
 
 # 3. Create ~/.local/bin if needed
-echo "Checking ~/.local/bin..."
+echo -e "${ARROW} Setting up commands..."
 if [ ! -d "$LOCAL_BIN" ]; then
     mkdir -p "$LOCAL_BIN"
-    echo "  [OK] Created $LOCAL_BIN"
-else
-    echo "  [OK] $LOCAL_BIN exists"
 fi
 
 # 4. Create symlinks for commands
-echo "Creating symlinks..."
-
-# Main sk command
-if [ -L "$LOCAL_BIN/sk" ]; then
-    current_target=$(readlink "$LOCAL_BIN/sk")
-    if [ "$current_target" = "$SCRIPT_DIR/bin/sk" ]; then
-        echo "  [OK] sk already linked"
-    else
-        ln -sf "$SCRIPT_DIR/bin/sk" "$LOCAL_BIN/sk"
-        echo "  [OK] sk updated (was: $current_target)"
-    fi
-else
-    ln -sf "$SCRIPT_DIR/bin/sk" "$LOCAL_BIN/sk"
-    echo "  [OK] sk linked"
-fi
-
-# Helper commands
-for cmd in sk-info sk-reconnect sk-keepalive sk-keepalive-stop; do
+link_cmd() {
+    local cmd="$1"
     if [ -L "$LOCAL_BIN/$cmd" ]; then
-        current_target=$(readlink "$LOCAL_BIN/$cmd")
-        if [ "$current_target" = "$SCRIPT_DIR/bin/$cmd" ]; then
-            echo "  [OK] $cmd already linked"
-        else
-            ln -sf "$SCRIPT_DIR/bin/$cmd" "$LOCAL_BIN/$cmd"
-            echo "  [OK] $cmd updated"
+        current=$(readlink "$LOCAL_BIN/$cmd")
+        if [ "$current" = "$SCRIPT_DIR/bin/$cmd" ]; then
+            return 0  # Already correct
         fi
-    else
-        ln -sf "$SCRIPT_DIR/bin/$cmd" "$LOCAL_BIN/$cmd"
-        echo "  [OK] $cmd linked"
+    fi
+    ln -sf "$SCRIPT_DIR/bin/$cmd" "$LOCAL_BIN/$cmd"
+    return 1  # Was updated
+}
+
+updated=0
+for cmd in sk sk-info sk-reconnect sk-keepalive sk-keepalive-stop; do
+    if ! link_cmd "$cmd"; then
+        ((updated++)) || true
     fi
 done
 
+if [ "$updated" -gt 0 ]; then
+    echo -e "  ${CHECK} Commands linked ($updated updated)"
+else
+    echo -e "  ${CHECK} Commands linked"
+fi
+
 # 5. Set up autostart
-echo "Checking GNOME autostart..."
+echo -e "${ARROW} Configuring autostart..."
 AUTOSTART_DIR="$HOME/.config/autostart"
 AUTOSTART_FILE="$AUTOSTART_DIR/shellkeeper.desktop"
 if [ -f "$AUTOSTART_FILE" ]; then
-    echo "  [OK] Autostart already configured"
+    echo -e "  ${CHECK} Autostart configured"
 else
     mkdir -p "$AUTOSTART_DIR"
     cat > "$AUTOSTART_FILE" << EOF
@@ -103,36 +105,33 @@ Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
 EOF
-    echo "  [OK] Autostart configured"
+    echo -e "  ${CHECK} Autostart configured"
 fi
 
 # 6. Install man page
-echo "Installing man page..."
+echo -e "${ARROW} Installing documentation..."
 MAN_DIR="$HOME/.local/share/man/man1"
-if [ ! -d "$MAN_DIR" ]; then
-    mkdir -p "$MAN_DIR"
-fi
-if [ -L "$MAN_DIR/sk.1" ] || [ -f "$MAN_DIR/sk.1" ]; then
-    rm -f "$MAN_DIR/sk.1"
-fi
-ln -sf "$SCRIPT_DIR/man/sk.1" "$MAN_DIR/sk.1"
-echo "  [OK] Man page installed (run 'man sk' to view)"
+mkdir -p "$MAN_DIR"
+ln -sf "$SCRIPT_DIR/man/sk.1" "$MAN_DIR/sk.1" 2>/dev/null || true
+echo -e "  ${CHECK} Man page installed"
 
 # 7. Clean up old wrapper if it exists
 OLD_WRAPPER="$HOME/tools/sk"
 if [ -f "$OLD_WRAPPER" ] && [ ! -L "$OLD_WRAPPER" ]; then
-    echo "Removing old wrapper script..."
     rm "$OLD_WRAPPER"
-    echo "  [OK] Removed $OLD_WRAPPER"
+    echo -e "  ${CHECK} Cleaned old wrapper"
 fi
 
 echo ""
-echo "=== Installation Complete ==="
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${GREEN}  Installation complete!${NC}"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo "The 'sk' command is now available."
+echo -e "  ${DIM}Quick start:${NC}"
+echo -e "    sk new              Create a session"
+echo -e "    sk ls               List sessions"
+echo -e "    man sk              Full documentation"
 echo ""
-echo "Optional: Add to .zshrc for aliases (sn, sl, skt, etc.) and prompt:"
-echo "  source $SCRIPT_DIR/lib/shellkeeper-aliases.sh"
-echo "  if [ -n \"\$SHELLKEEPER_SESSION\" ]; then"
-echo "      source $SCRIPT_DIR/bin/sk-prompt >/dev/null 2>&1"
-echo "  fi"
+echo -e "  ${DIM}Optional aliases - add to .zshrc:${NC}"
+echo -e "    source $SCRIPT_DIR/lib/shellkeeper-aliases.sh"
+echo ""
