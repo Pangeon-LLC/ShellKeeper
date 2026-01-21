@@ -15,7 +15,15 @@ if [ -n "$SHELLKEEPER_SESSION" ]; then
         if [[ -n "$ZSH_THEME" ]]; then
             # oh-my-zsh user - modify PROMPT
             if [[ "$PROMPT" != *"[$SHELLKEEPER_SESSION]"* ]]; then
-                export PROMPT="[$SHELLKEEPER_SESSION] ${PROMPT}"
+                # Check if there's already a virtual env prefix and preserve it
+                if [[ "$PROMPT" =~ ^\([^)]*\)[[:space:]]*(.*) ]]; then
+                    # Extract the venv prefix and the rest of the prompt
+                    VENV_PREFIX="${PROMPT%% *} "
+                    REST_PROMPT="${PROMPT#* }"
+                    export PROMPT="${VENV_PREFIX}[$SHELLKEEPER_SESSION] ${REST_PROMPT}"
+                else
+                    export PROMPT="[$SHELLKEEPER_SESSION] ${PROMPT}"
+                fi
                 echo "✓ Prompt updated with session name (oh-my-zsh)"
             else
                 echo "✓ Prompt already shows session name"

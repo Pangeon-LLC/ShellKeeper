@@ -46,7 +46,7 @@ ShellKeeper requires `dtach` (the minimal session backend):
 # Ubuntu/Debian
 sudo apt-get install dtach
 
-# macOS  
+# macOS
 brew install dtach
 
 # Fedora/RHEL
@@ -56,6 +56,21 @@ sudo dnf install dtach
 git clone https://github.com/crigler/dtach
 cd dtach && ./configure && make && sudo make install
 ```
+
+### Critical: Enable Lingering Sessions (Linux)
+
+On systemd-based Linux systems, sessions are killed when you log out unless you enable "lingering":
+
+```bash
+# Run this once - required for sessions to survive logout/crash
+loginctl enable-linger $USER
+
+# Verify it's enabled
+loginctl show-user $USER | grep Linger
+# Should show: Linger=yes
+```
+
+**Without this, all your ShellKeeper sessions will be terminated when you log out or if your desktop session crashes.**
 
 ### Install ShellKeeper
 
@@ -93,13 +108,33 @@ exec $SHELL
 ### Basic Commands
 
 ```bash
-sk new [name]     # Create new session (auto-named if no name given)
-sk ls             # List all sessions
-sk [name]         # Attach to named session
-sk                # Attach to most recent session
-sk kill [name]    # Terminate a session
-sk rename [old] [new]  # Rename a session
-sk clean          # Remove dead session sockets
+sk new [name]           # Create new session (auto-named if no name given)
+sk ls                   # List all sessions
+sk [name]               # Attach to named session
+sk                      # Attach to most recent session
+sk kill [name]          # Terminate a session
+sk rename [old] [new]   # Rename a session
+sk clean                # Remove dead session sockets
+```
+
+### GNOME Terminal Profile Support
+
+```bash
+sk new --profile="My Profile"   # Create session with specific terminal profile
+sk new --match                  # Inherit current session's profile
+sk terminal                     # Open new terminal with new session
+sk terminal --match             # Open new terminal, inherit profile
+sk restore [name]               # Restore session with its original profile
+sk restore-all                  # Restore all sessions with correct profiles
+sk profiles list                # List available GNOME Terminal profiles
+sk profiles default             # Show default profile
+```
+
+### Session Information
+
+```bash
+sk info [name]          # Show session details (profile, created time, etc.)
+sk metadata list        # List all session metadata
 ```
 
 ### Detaching Safely
@@ -147,7 +182,10 @@ Configuration file: `~/.shellkeeper/config.json`
   "keepalive": {
     "enabled": true,
     "interval": 60
-  }
+  },
+  "default_profile": "Default",
+  "default_profile_uuid": null,
+  "session_name_format": "{profile}-{date}-{time}-{random}"
 }
 ```
 
@@ -191,6 +229,10 @@ ShellKeeper includes automatic keepalive to prevent SSH timeouts:
 **"Session not found" error**
 - The session may have ended. Check with `sk ls`
 
+**Sessions die when I log out**
+- Enable lingering: `loginctl enable-linger $USER`
+- This is required on systemd-based Linux systems
+
 **Can't create new session**
 - Ensure dtach is installed: `which dtach`
 - Check permissions on `~/.shellkeeper/`
@@ -203,17 +245,23 @@ ShellKeeper includes automatic keepalive to prevent SSH timeouts:
 - Unfortunately the session is gone. Remember: always use `Ctrl+\` to detach!
 - Run `sk clean` to remove dead socket files
 
+**Profile restoration not working**
+- Ensure you're using GNOME Terminal
+- Check that the profile still exists: `sk profiles list`
+
 ## How It Works
 
 ShellKeeper is a Python wrapper around `dtach` that adds:
 
 1. **Session Management**: Easy create/list/attach/kill operations
-2. **Smart Defaults**: Auto-naming, last-session memory, session discovery
+2. **Smart Defaults**: Auto-naming with profile slugs, last-session memory, session discovery
 3. **Shell Integration**: Prompt modification, environment variables, aliases
-4. **Keepalive**: Background process preventing timeouts
-5. **Safety Features**: Socket cleanup, session verification, dependency checking
+4. **Profile Support**: GNOME Terminal profile tracking and profile-aware restoration
+5. **Metadata Storage**: Tracks profile, creation time, and other session info
+6. **Keepalive**: Background process preventing timeouts
+7. **Safety Features**: Socket cleanup, session verification, dependency checking
 
-The magic is that dtach only handles process attachment/detachment - it doesn't touch your terminal emulation. Your terminal still renders everything, so scrolling, copy/paste, and all other native features work normally.
+The magic is that abduco/dtach only handles process attachment/detachment - it doesn't touch your terminal emulation. Your terminal still renders everything, so scrolling, copy/paste, and all other native features work normally.
 
 ## Contributing
 
