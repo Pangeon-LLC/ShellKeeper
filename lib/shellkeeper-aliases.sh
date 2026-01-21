@@ -70,5 +70,7 @@ sk_auto() {
     fi
 }
 
-# Show reminder when sourced
-echo "ShellKeeper aliases loaded. Type 'skhelp' for commands."
+# Show reminder when sourced (unless silent mode)
+if [ -z "$SK_SILENT" ]; then
+    echo "ShellKeeper aliases loaded. Type 'skhelp' for commands."
+fi
