@@ -2,16 +2,12 @@
 # ShellKeeper Installation Script
 # Safe to run multiple times - idempotent
 #
-# Note: Does NOT modify shell rc files. Add these to your .zshrc manually:
-#   export PATH="$PATH:/home/graham/tools/ShellKeeper/bin"
-#   source /home/graham/tools/ShellKeeper/lib/shellkeeper-aliases.sh
-#   if [ -n "$SHELLKEEPER_SESSION" ]; then
-#       source /home/graham/tools/ShellKeeper/bin/sk-prompt >/dev/null 2>&1
-#   fi
+# Installs sk command via symlink to ~/.local/bin (no .zshrc changes needed)
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCAL_BIN="$HOME/.local/bin"
 
 echo "=== ShellKeeper Installation ==="
 echo ""
@@ -47,7 +43,49 @@ if [ "$(uname)" = "Linux" ]; then
     fi
 fi
 
-# 3. Set up autostart
+# 3. Create ~/.local/bin if needed
+echo "Checking ~/.local/bin..."
+if [ ! -d "$LOCAL_BIN" ]; then
+    mkdir -p "$LOCAL_BIN"
+    echo "  [OK] Created $LOCAL_BIN"
+else
+    echo "  [OK] $LOCAL_BIN exists"
+fi
+
+# 4. Create symlinks for commands
+echo "Creating symlinks..."
+
+# Main sk command
+if [ -L "$LOCAL_BIN/sk" ]; then
+    current_target=$(readlink "$LOCAL_BIN/sk")
+    if [ "$current_target" = "$SCRIPT_DIR/bin/sk" ]; then
+        echo "  [OK] sk already linked"
+    else
+        ln -sf "$SCRIPT_DIR/bin/sk" "$LOCAL_BIN/sk"
+        echo "  [OK] sk updated (was: $current_target)"
+    fi
+else
+    ln -sf "$SCRIPT_DIR/bin/sk" "$LOCAL_BIN/sk"
+    echo "  [OK] sk linked"
+fi
+
+# Helper commands
+for cmd in sk-info sk-reconnect sk-keepalive sk-keepalive-stop; do
+    if [ -L "$LOCAL_BIN/$cmd" ]; then
+        current_target=$(readlink "$LOCAL_BIN/$cmd")
+        if [ "$current_target" = "$SCRIPT_DIR/bin/$cmd" ]; then
+            echo "  [OK] $cmd already linked"
+        else
+            ln -sf "$SCRIPT_DIR/bin/$cmd" "$LOCAL_BIN/$cmd"
+            echo "  [OK] $cmd updated"
+        fi
+    else
+        ln -sf "$SCRIPT_DIR/bin/$cmd" "$LOCAL_BIN/$cmd"
+        echo "  [OK] $cmd linked"
+    fi
+done
+
+# 5. Set up autostart
 echo "Checking GNOME autostart..."
 AUTOSTART_DIR="$HOME/.config/autostart"
 AUTOSTART_FILE="$AUTOSTART_DIR/shellkeeper.desktop"
@@ -68,15 +106,21 @@ EOF
     echo "  [OK] Autostart configured"
 fi
 
+# 6. Clean up old wrapper if it exists
+OLD_WRAPPER="$HOME/tools/sk"
+if [ -f "$OLD_WRAPPER" ] && [ ! -L "$OLD_WRAPPER" ]; then
+    echo "Removing old wrapper script..."
+    rm "$OLD_WRAPPER"
+    echo "  [OK] Removed $OLD_WRAPPER"
+fi
+
 echo ""
 echo "=== Installation Complete ==="
 echo ""
-echo "Add these lines to your .zshrc:"
+echo "The 'sk' command is now available."
 echo ""
-echo "  export PATH=\"\$PATH:$SCRIPT_DIR/bin\""
+echo "Optional: Add to .zshrc for aliases (sn, sl, skt, etc.) and prompt:"
 echo "  source $SCRIPT_DIR/lib/shellkeeper-aliases.sh"
 echo "  if [ -n \"\$SHELLKEEPER_SESSION\" ]; then"
 echo "      source $SCRIPT_DIR/bin/sk-prompt >/dev/null 2>&1"
 echo "  fi"
-echo ""
-echo "Then: exec \$SHELL"
