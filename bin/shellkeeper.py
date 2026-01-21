@@ -83,6 +83,33 @@ class SessionMetadata:
             self._save()
         return to_remove
 
+    def export_data(self):
+        """Export metadata in a portable format"""
+        return {
+            "version": 1,
+            "exported": datetime.now().isoformat(),
+            "sessions": self.data
+        }
+
+    def import_data(self, data, force=False):
+        """Import metadata from exported format"""
+        if "sessions" not in data:
+            raise ValueError("Invalid export format: missing 'sessions' key")
+
+        imported = 0
+        skipped = 0
+        for name, meta in data["sessions"].items():
+            if name in self.data and not force:
+                skipped += 1
+            else:
+                self.data[name] = meta
+                imported += 1
+
+        if imported > 0:
+            self._save()
+
+        return imported, skipped
+
 
 class GnomeProfiles:
     """Manages GNOME Terminal profile discovery"""
@@ -796,6 +823,16 @@ Inside a session:
     metadata_sub = metadata_parser.add_subparsers(dest="metadata_command")
     metadata_list = metadata_sub.add_parser("list", help="List all metadata")
     metadata_clean = metadata_sub.add_parser("clean", help="Clean orphaned metadata")
+    metadata_export = metadata_sub.add_parser("export", help="Export metadata to stdout")
+    metadata_import = metadata_sub.add_parser("import", help="Import metadata from stdin")
+    metadata_import.add_argument("--force", "-f", action="store_true", help="Overwrite existing entries")
+
+    # Config subcommand
+    config_parser = subparsers.add_parser("config", help="Manage configuration")
+    config_sub = config_parser.add_subparsers(dest="config_command")
+    config_show = config_sub.add_parser("show", help="Show current configuration")
+    config_set_profile = config_sub.add_parser("set-default-profile", help="Set default terminal profile")
+    config_set_profile.add_argument("profile", help="Profile name")
 
     # Setup autostart
     autostart_parser = subparsers.add_parser("setup-autostart", help="Set up session restore on login")
@@ -923,8 +960,48 @@ Inside a session:
             else:
                 print("No orphaned metadata to clean")
 
+        elif args.metadata_command == "export":
+            export_data = sk.metadata.export_data()
+            print(json.dumps(export_data, indent=2))
+
+        elif args.metadata_command == "import":
+            try:
+                import_data = json.load(sys.stdin)
+                imported, skipped = sk.metadata.import_data(import_data, force=args.force)
+                print(f"Imported {imported} session(s)")
+                if skipped > 0:
+                    print(f"Skipped {skipped} existing session(s) (use --force to overwrite)")
+            except json.JSONDecodeError as e:
+                print(f"Error: Invalid JSON input: {e}")
+                sys.exit(1)
+            except ValueError as e:
+                print(f"Error: {e}")
+                sys.exit(1)
+
         else:
             metadata_parser.print_help()
+
+    elif args.command == "config":
+        if args.config_command == "show":
+            print("Current configuration:")
+            print(json.dumps(sk.config, indent=2))
+
+        elif args.config_command == "set-default-profile":
+            profile = GnomeProfiles.find_profile_by_name(args.profile)
+            if profile:
+                sk.config["default_profile"] = profile["name"]
+                sk.config["default_profile_uuid"] = profile["uuid"]
+                sk.save_config()
+                print(f"Default profile set to: {profile['name']} ({profile['uuid']})")
+            else:
+                print(f"Profile '{args.profile}' not found")
+                print("Available profiles:")
+                for p in GnomeProfiles.list_profiles():
+                    print(f"  {p['name']}")
+                sys.exit(1)
+
+        else:
+            config_parser.print_help()
 
     elif args.command == "setup-autostart":
         sk.setup_autostart()

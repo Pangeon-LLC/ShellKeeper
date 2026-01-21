@@ -1,0 +1,201 @@
+.TH SK 1 "January 2026" "ShellKeeper 2.1" "User Commands"
+.SH NAME
+sk \- terminal session manager with native scrolling
+.SH SYNOPSIS
+.B sk
+[\fIcommand\fR] [\fIoptions\fR] [\fIarguments\fR]
+.SH DESCRIPTION
+.B ShellKeeper
+is a lightweight terminal session manager built on dtach. Unlike screen or tmux,
+it preserves your terminal's native scrolling. Sessions persist across disconnections
+and can be restored with their original GNOME Terminal profiles.
+.SH COMMANDS
+.SS Session Management
+.TP
+.B sk new \fR[\fIname\fR] [\fB--profile\fR=\fINAME\fR] [\fB--match\fR]
+Create a new session. If no name is given, one is auto-generated using the profile name.
+Use \fB--profile\fR to specify a GNOME Terminal profile, or \fB--match\fR to inherit
+the current session's profile.
+.TP
+.B sk \fR[\fIname\fR]
+.TQ
+.B sk attach \fIname\fR
+Attach to an existing session. If no name is given, attaches to the most recent session.
+.TP
+.B sk ls
+.TQ
+.B sk list
+List all active sessions with their profiles and last activity time.
+.TP
+.B sk last
+Attach to the most recently used session.
+.TP
+.B sk kill \fIname\fR
+Terminate a session.
+.TP
+.B sk rename \fIoldname\fR \fInewname\fR
+Rename a session. Updates both the socket file and metadata.
+.TP
+.B sk clean
+Remove dead session sockets and orphaned metadata.
+.TP
+.B sk info \fR[\fIname\fR]
+Show detailed information about a session (profile, creation time, socket path).
+If no name is given, shows info for the current session.
+.SS Terminal & Profile Commands
+.TP
+.B sk terminal \fR[\fB--profile\fR=\fINAME\fR] [\fB--match\fR]
+Open a new GNOME Terminal window with a new session. Uses the specified profile,
+inherits the current session's profile with \fB--match\fR, or uses the configured default.
+.TP
+.B sk restore \fR[\fIname\fR]
+Restore a session in a new terminal window with its original profile.
+If no name is given, restores the most recent session.
+.TP
+.B sk restore-all
+Restore all active sessions in separate terminal windows with their original profiles.
+.TP
+.B sk profiles list
+List all available GNOME Terminal profiles with their UUIDs.
+.TP
+.B sk profiles default
+Show the default GNOME Terminal profile.
+.SS Configuration
+.TP
+.B sk config show
+Display the current configuration.
+.TP
+.B sk config set-default-profile \fINAME\fR
+Set the default terminal profile for new sessions.
+.SS Metadata Management
+.TP
+.B sk metadata list
+List all session metadata (profiles, creation times).
+.TP
+.B sk metadata clean
+Remove metadata for sessions that no longer exist.
+.TP
+.B sk metadata export
+Export all metadata to stdout as JSON.
+.TP
+.B sk metadata import \fR[\fB--force\fR]
+Import metadata from stdin. Use \fB--force\fR to overwrite existing entries.
+.SS Setup
+.TP
+.B sk setup-autostart
+Configure GNOME to check for surviving sessions on login.
+.SH OPTIONS
+.TP
+.BR \-p ", " \-\-profile =\fINAME\fR
+Specify a GNOME Terminal profile by name.
+.TP
+.BR \-m ", " \-\-match
+Inherit the current session's terminal profile.
+.TP
+.BR \-f ", " \-\-force
+Force overwrite when importing metadata.
+.SH DETACHING
+To detach from a session while leaving it running, press \fBCtrl+\e\fR (Control + Backslash).
+.PP
+\fBWarning:\fR Pressing Ctrl+C will kill the session, not detach from it.
+.SH ENVIRONMENT
+.TP
+.B SHELLKEEPER_SESSION
+Set within sessions to the current session name.
+.TP
+.B SHELLKEEPER_SOCKET
+Set within sessions to the socket file path.
+.TP
+.B SK_PROFILE_NAME
+Set within sessions to the GNOME Terminal profile name.
+.TP
+.B SK_PROFILE_UUID
+Set within sessions to the GNOME Terminal profile UUID.
+.SH FILES
+.TP
+.I ~/.shellkeeper/config.json
+User configuration file.
+.TP
+.I ~/.shellkeeper/metadata.json
+Session metadata (profiles, timestamps).
+.TP
+.I ~/.shellkeeper/sessions/
+Directory containing session socket files.
+.TP
+.I ~/.config/autostart/shellkeeper.desktop
+GNOME autostart entry for session restoration.
+.SH CONFIGURATION
+The configuration file supports the following options:
+.PP
+.RS
+.nf
+{
+  "default_shell": "/bin/bash",
+  "default_profile": "My Profile",
+  "default_profile_uuid": "uuid-here",
+  "session_name_format": "{profile}-{date}-{time}-{random}",
+  "keepalive": {
+    "enabled": true,
+    "interval": 60
+  }
+}
+.fi
+.RE
+.SH EXAMPLES
+Create a session with a specific profile:
+.PP
+.RS
+sk new --profile="Forest Canopy"
+.RE
+.PP
+Create a session inheriting the current profile:
+.PP
+.RS
+sk new --match
+.RE
+.PP
+List sessions:
+.PP
+.RS
+sk ls
+.RE
+.PP
+Restore all sessions after a crash:
+.PP
+.RS
+sk restore-all
+.RE
+.PP
+Set a default profile:
+.PP
+.RS
+sk config set-default-profile "My Profile"
+.RE
+.PP
+Backup and restore metadata:
+.PP
+.RS
+sk metadata export > backup.json
+.br
+sk metadata import < backup.json
+.RE
+.SH PREREQUISITES
+.B dtach
+must be installed. On Ubuntu/Debian:
+.PP
+.RS
+sudo apt-get install dtach
+.RE
+.PP
+For sessions to survive logout, enable lingering:
+.PP
+.RS
+loginctl enable-linger $USER
+.RE
+.SH SEE ALSO
+.BR dtach (1),
+.BR gnome-terminal (1)
+.SH AUTHORS
+ShellKeeper was created by Pangeon LLC.
+.SH BUGS
+Report bugs at https://github.com/Pangeon-LLC/ShellKeeper/issues

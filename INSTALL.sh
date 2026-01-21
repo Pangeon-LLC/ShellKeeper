@@ -106,7 +106,19 @@ EOF
     echo "  [OK] Autostart configured"
 fi
 
-# 6. Clean up old wrapper if it exists
+# 6. Install man page
+echo "Installing man page..."
+MAN_DIR="$HOME/.local/share/man/man1"
+if [ ! -d "$MAN_DIR" ]; then
+    mkdir -p "$MAN_DIR"
+fi
+if [ -L "$MAN_DIR/sk.1" ] || [ -f "$MAN_DIR/sk.1" ]; then
+    rm -f "$MAN_DIR/sk.1"
+fi
+ln -sf "$SCRIPT_DIR/man/sk.1" "$MAN_DIR/sk.1"
+echo "  [OK] Man page installed (run 'man sk' to view)"
+
+# 7. Clean up old wrapper if it exists
 OLD_WRAPPER="$HOME/tools/sk"
 if [ -f "$OLD_WRAPPER" ] && [ ! -L "$OLD_WRAPPER" ]; then
     echo "Removing old wrapper script..."

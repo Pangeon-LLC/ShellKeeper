@@ -68,6 +68,10 @@ case "$1" in
         shift
         python3 "$PYTHON_SCRIPT" metadata "$@"
         ;;
+    config)
+        shift
+        python3 "$PYTHON_SCRIPT" config "$@"
+        ;;
     setup-autostart)
         python3 "$PYTHON_SCRIPT" setup-autostart
         ;;
