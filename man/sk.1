@@ -1,4 +1,4 @@
-.TH SK 1 "January 2026" "ShellKeeper 2.2" "User Commands"
+.TH SK 1 "January 2026" "ShellKeeper 2.3" "User Commands"
 .SH NAME
 sk \- terminal session manager with native scrolling
 .SH SYNOPSIS
@@ -73,6 +73,9 @@ List all available GNOME Terminal profiles with their UUIDs.
 .TP
 .B sk profiles default
 Show the default GNOME Terminal profile.
+.TP
+.B sk profiles export
+Export all GNOME Terminal profiles to JSON for backup or portability.
 .SS Configuration
 .TP
 .B sk config show
@@ -97,6 +100,19 @@ Import metadata from stdin. Use \fB--force\fR to overwrite existing entries.
 .TP
 .B sk setup-autostart
 Configure GNOME to check for surviving sessions on login.
+.SS Diagnostics & Utilities
+.TP
+.B sk doctor
+Run health checks and verify system configuration.
+Checks dtach installation, loginctl linger, autostart setup, and GNOME profiles.
+.TP
+.B sk log \fIname\fR \fR[\fB--output\fR=\fIFILE\fR]
+Capture session output to a log file.
+Default location: ~/.shellkeeper/logs/
+.TP
+.B sk dashboard
+Open an interactive TUI showing all sessions with live status.
+Navigate with arrow keys, attach with Enter, kill with 'k', quit with 'q'.
 .SH OPTIONS
 .TP
 .BR \-p ", " \-\-profile =\fINAME\fR
@@ -104,6 +120,9 @@ Specify a GNOME Terminal profile by name.
 .TP
 .BR \-m ", " \-\-match
 Inherit the current session's terminal profile.
+.TP
+.BR \-t ", " \-\-template =\fINAME\fR
+Create session from a configured template.
 .TP
 .BR \-f ", " \-\-force
 Force overwrite when importing metadata.
@@ -135,6 +154,9 @@ Session metadata (profiles, timestamps).
 .I ~/.shellkeeper/sessions/
 Directory containing session socket files.
 .TP
+.I ~/.shellkeeper/logs/
+Directory containing session log files (from \fBsk log\fR).
+.TP
 .I ~/.config/autostart/shellkeeper.desktop
 GNOME autostart entry for session restoration.
 .SH CONFIGURATION
@@ -150,10 +172,28 @@ The configuration file supports the following options:
   "keepalive": {
     "enabled": true,
     "interval": 60
+  },
+  "hooks": {
+    "on_create": "/path/to/script",
+    "on_attach": "/path/to/script",
+    "on_detach": "/path/to/script"
+  },
+  "templates": {
+    "dev": {
+      "profile": "Development",
+      "command": "source venv/bin/activate",
+      "directory": "/home/user/projects"
+    }
   }
 }
 .fi
 .RE
+.SS Hooks
+Hooks are scripts that run on session events. The script receives the session name
+in the \fBSK_SESSION\fR environment variable and the hook name in \fBSK_HOOK\fR.
+.SS Templates
+Templates allow quick creation of sessions with predefined settings.
+Use \fBsk new --template=dev\fR to create a session from a template.
 .SH EXAMPLES
 Create a session with a specific profile:
 .PP

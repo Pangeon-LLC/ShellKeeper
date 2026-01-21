@@ -240,6 +240,49 @@ class GnomeProfiles:
             return {"uuid": uuid, "name": name}
         return None
 
+    @classmethod
+    def export_profiles(cls):
+        """Export all GNOME Terminal profiles to JSON format"""
+        profiles = cls.list_profiles()
+        exported = []
+
+        for profile in profiles:
+            uuid = profile["uuid"]
+            profile_data = {
+                "uuid": uuid,
+                "name": profile["name"],
+                "settings": {}
+            }
+
+            # Export common settings
+            settings_to_export = [
+                "visible-name", "foreground-color", "background-color",
+                "use-theme-colors", "palette", "font", "use-system-font",
+                "cursor-shape", "cursor-blink-mode", "scrollback-lines",
+                "scrollback-unlimited", "audible-bell"
+            ]
+
+            for setting in settings_to_export:
+                try:
+                    result = subprocess.run(
+                        ["gsettings", "get",
+                         f"org.gnome.Terminal.Legacy.Profile:{cls.DCONF_PATH}:{uuid}/",
+                         setting],
+                        capture_output=True, text=True, check=True
+                    )
+                    value = result.stdout.strip()
+                    profile_data["settings"][setting] = value
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    pass
+
+            exported.append(profile_data)
+
+        return {
+            "version": 1,
+            "exported": datetime.now().isoformat(),
+            "profiles": exported
+        }
+
 
 class ShellKeeper:
     def __init__(self):
@@ -290,6 +333,146 @@ class ShellKeeper:
         except (subprocess.CalledProcessError, FileNotFoundError):
             pass  # loginctl not available, skip check
 
+    def is_linger_enabled(self):
+        """Check if loginctl linger is enabled"""
+        if sys.platform != "linux":
+            return None  # Not applicable
+        try:
+            result = subprocess.run(
+                ["loginctl", "show-user", os.environ.get("USER", ""), "--property=Linger"],
+                capture_output=True, text=True
+            )
+            return "Linger=yes" in result.stdout
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return None
+
+    def is_autostart_configured(self):
+        """Check if autostart is configured"""
+        autostart_file = Path.home() / ".config" / "autostart" / "shellkeeper.desktop"
+        return autostart_file.exists()
+
+    def doctor(self):
+        """Run health checks and report status"""
+        checks = []
+
+        # Check dtach
+        dtach_ok = self.backend == "dtach"
+        checks.append(("dtach installed", dtach_ok, "sudo apt install dtach"))
+
+        # Check jq (optional, for JSON processing)
+        try:
+            subprocess.run(["which", "jq"], check=True, capture_output=True)
+            jq_ok = True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            jq_ok = False
+        checks.append(("jq installed (optional)", jq_ok, "sudo apt install jq"))
+
+        # Check loginctl linger
+        linger = self.is_linger_enabled()
+        if linger is None:
+            checks.append(("loginctl linger", None, "Not applicable (non-Linux)"))
+        else:
+            checks.append(("loginctl linger enabled", linger, "sudo loginctl enable-linger $USER"))
+
+        # Check autostart
+        autostart_ok = self.is_autostart_configured()
+        checks.append(("autostart configured", autostart_ok, "sk setup-autostart"))
+
+        # Check GNOME profiles
+        gnome_ok = GnomeProfiles.is_available()
+        checks.append(("GNOME Terminal profiles", gnome_ok, "Install GNOME Terminal"))
+
+        # Check config file
+        config_ok = self.config_file.exists()
+        checks.append(("config file exists", config_ok, "Will be created on first use"))
+
+        # Check sessions directory
+        sessions_ok = self.session_dir.exists()
+        checks.append(("sessions directory exists", sessions_ok, "Will be created on first use"))
+
+        return checks
+
+    def run_hook(self, hook_name, session_name):
+        """Run a configured hook script"""
+        hooks = self.config.get("hooks", {})
+        hook_script = hooks.get(hook_name)
+
+        if hook_script and os.path.isfile(hook_script):
+            env = os.environ.copy()
+            env["SK_SESSION"] = session_name
+            env["SK_HOOK"] = hook_name
+            try:
+                subprocess.Popen(
+                    [hook_script],
+                    env=env,
+                    start_new_session=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+            except Exception:
+                pass  # Silently ignore hook failures
+
+    def start_logging(self, session_name, log_file=None):
+        """Start logging a session's output"""
+        socket_path = self.get_socket_path(session_name)
+
+        if not socket_path.exists():
+            print(f"Session '{session_name}' not found")
+            return False
+
+        if not self.is_session_alive(socket_path):
+            print(f"Session '{session_name}' is dead")
+            return False
+
+        # Default log file location
+        if log_file is None:
+            log_dir = Path.home() / ".shellkeeper" / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            log_file = log_dir / f"{session_name}-{timestamp}.log"
+
+        # Use script command to capture output
+        cmd = [
+            "script", "-q", "-a", str(log_file),
+            "-c", f"dtach -a {socket_path} -e ^\\ -r winch"
+        ]
+
+        print(f"Logging session '{session_name}' to: {log_file}")
+        print("Press Ctrl+\\ to detach (log continues until session ends)")
+
+        subprocess.run(cmd)
+        return True
+
+    def get_templates(self):
+        """Get configured session templates"""
+        return self.config.get("templates", {})
+
+    def create_session_from_template(self, template_name, session_name=None):
+        """Create a session from a template"""
+        templates = self.get_templates()
+
+        if template_name not in templates:
+            print(f"Template '{template_name}' not found")
+            print("Available templates:")
+            for name in templates:
+                print(f"  {name}")
+            return False, None
+
+        template = templates[template_name]
+        profile_name = template.get("profile")
+        startup_cmd = template.get("command")
+        working_dir = template.get("directory")
+
+        # Create the session
+        success, session_name = self.create_session(
+            session_name=session_name,
+            profile_name=profile_name,
+            startup_command=startup_cmd,
+            working_directory=working_dir
+        )
+
+        return success, session_name
+
     def load_config(self):
         """Load or create default configuration"""
         default_config = {
@@ -303,7 +486,13 @@ class ShellKeeper:
             },
             "default_profile": None,
             "default_profile_uuid": None,
-            "session_name_format": "{profile}-{date}-{time}-{random}"
+            "session_name_format": "{profile}-{date}-{time}-{random}",
+            "hooks": {
+                "on_create": None,
+                "on_attach": None,
+                "on_detach": None
+            },
+            "templates": {}
         }
 
         if self.config_file.exists():
@@ -422,7 +611,8 @@ class ShellKeeper:
 
         return sorted(sessions, key=lambda x: x["last_active"], reverse=True)
 
-    def create_session(self, session_name=None, profile_name=None, profile_uuid=None, match_current=False):
+    def create_session(self, session_name=None, profile_name=None, profile_uuid=None, match_current=False,
+                       startup_command=None, working_directory=None):
         """Create a new session"""
         # Handle --match flag
         if match_current:
@@ -488,16 +678,29 @@ class ShellKeeper:
 
         # Create wrapper script
         shell_name = os.path.basename(self.config["default_shell"])
-        wrapper_script = f"""#!/bin/bash
-export SHELLKEEPER_SESSION="{session_name}"
-export SHELLKEEPER_SOCKET="{socket_path}"
-export SK_KEEPALIVE_ENABLED="{env['SK_KEEPALIVE_ENABLED']}"
-export SK_KEEPALIVE_INTERVAL="{env['SK_KEEPALIVE_INTERVAL']}"
-export SK_PROFILE_NAME="{profile_name or ''}"
-export SK_PROFILE_UUID="{profile_uuid or ''}"
 
-exec {self.config["default_shell"]}
-"""
+        # Build wrapper script with optional working directory and startup command
+        wrapper_lines = [
+            "#!/bin/bash",
+            f'export SHELLKEEPER_SESSION="{session_name}"',
+            f'export SHELLKEEPER_SOCKET="{socket_path}"',
+            f'export SK_KEEPALIVE_ENABLED="{env["SK_KEEPALIVE_ENABLED"]}"',
+            f'export SK_KEEPALIVE_INTERVAL="{env["SK_KEEPALIVE_INTERVAL"]}"',
+            f'export SK_PROFILE_NAME="{profile_name or ""}"',
+            f'export SK_PROFILE_UUID="{profile_uuid or ""}"',
+        ]
+
+        if working_directory:
+            wrapper_lines.append(f'cd "{working_directory}"')
+
+        if startup_command:
+            # Run startup command then drop into shell
+            wrapper_lines.append(f'{startup_command}')
+            wrapper_lines.append(f'exec {self.config["default_shell"]}')
+        else:
+            wrapper_lines.append(f'exec {self.config["default_shell"]}')
+
+        wrapper_script = "\n".join(wrapper_lines) + "\n"
 
         import tempfile
         with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
@@ -519,6 +722,9 @@ exec {self.config["default_shell"]}
             print(f"Profile: {profile_name}")
         print(f"*** DETACH WITH Ctrl+\\ (NOT Ctrl+C) ***")
 
+        # Run on_create hook
+        self.run_hook("on_create", session_name)
+
         try:
             subprocess.run(cmd, env=env)
         finally:
@@ -526,6 +732,8 @@ exec {self.config["default_shell"]}
                 os.unlink(wrapper_path)
             except:
                 pass
+            # Run on_detach hook (session was detached or ended)
+            self.run_hook("on_detach", session_name)
 
         return True, session_name
 
@@ -560,7 +768,14 @@ exec {self.config["default_shell"]}
         print(f"Attaching to session: {session_name}")
         print(f"*** DETACH WITH Ctrl+\\ (NOT Ctrl+C) ***")
 
+        # Run on_attach hook
+        self.run_hook("on_attach", session_name)
+
         subprocess.run(cmd, env=env)
+
+        # Run on_detach hook
+        self.run_hook("on_detach", session_name)
+
         return True
 
     def kill_session(self, session_name):
@@ -818,6 +1033,107 @@ X-GNOME-Autostart-enabled=true
         print("ShellKeeper will now check for surviving sessions on login.")
 
 
+def run_dashboard(sk):
+    """Run the interactive TUI dashboard"""
+    import curses
+
+    def dashboard_main(stdscr):
+        curses.curs_set(0)  # Hide cursor
+        curses.use_default_colors()
+        curses.init_pair(1, curses.COLOR_GREEN, -1)
+        curses.init_pair(2, curses.COLOR_YELLOW, -1)
+        curses.init_pair(3, curses.COLOR_CYAN, -1)
+        curses.init_pair(4, curses.COLOR_RED, -1)
+
+        selected = 0
+        refresh_interval = 2  # seconds
+
+        while True:
+            stdscr.clear()
+            height, width = stdscr.getmaxyx()
+
+            # Header
+            header = " ShellKeeper Dashboard "
+            stdscr.attron(curses.A_BOLD | curses.color_pair(3))
+            stdscr.addstr(0, (width - len(header)) // 2, header)
+            stdscr.attroff(curses.A_BOLD | curses.color_pair(3))
+
+            # Get sessions
+            sessions = sk.list_sessions(clean_dead=False)
+
+            if not sessions:
+                stdscr.addstr(2, 2, "No active sessions", curses.color_pair(2))
+                stdscr.addstr(4, 2, "Press 'n' to create new session, 'q' to quit")
+            else:
+                # Column headers
+                stdscr.attron(curses.A_UNDERLINE)
+                stdscr.addstr(2, 2, f"{'Session':<35} {'Profile':<20} {'Last Active':<15}")
+                stdscr.attroff(curses.A_UNDERLINE)
+
+                # List sessions
+                for i, session in enumerate(sessions):
+                    if i >= height - 6:  # Leave room for footer
+                        break
+
+                    meta = sk.metadata.get(session["name"])
+                    profile = session.get("profile_name", "-")[:18] or "-"
+                    last_attached = meta.get("last_attached")
+                    time_str = relative_time(last_attached) if last_attached else "-"
+
+                    name = session["name"][:33]
+                    line = f"  {name:<35} {profile:<20} {time_str:<15}"
+
+                    if i == selected:
+                        stdscr.attron(curses.A_REVERSE)
+                        stdscr.addstr(3 + i, 0, line[:width-1])
+                        stdscr.attroff(curses.A_REVERSE)
+                    else:
+                        stdscr.addstr(3 + i, 0, line[:width-1])
+
+                    note = meta.get("note")
+                    if note and i == selected:
+                        stdscr.addstr(3 + i, len(line), f' "{note[:20]}"', curses.color_pair(2))
+
+            # Footer
+            footer = " [Enter] Attach  [k] Kill  [n] New  [r] Refresh  [q] Quit "
+            stdscr.attron(curses.A_REVERSE)
+            stdscr.addstr(height - 1, 0, footer.ljust(width - 1))
+            stdscr.attroff(curses.A_REVERSE)
+
+            stdscr.refresh()
+
+            # Handle input with timeout for auto-refresh
+            stdscr.timeout(refresh_interval * 1000)
+            try:
+                key = stdscr.getch()
+            except:
+                continue
+
+            if key == ord('q'):
+                break
+            elif key == ord('r') or key == -1:  # -1 is timeout
+                continue
+            elif key == ord('n'):
+                curses.endwin()
+                sk.create_session()
+                curses.doupdate()
+            elif key == curses.KEY_UP and selected > 0:
+                selected -= 1
+            elif key == curses.KEY_DOWN and sessions and selected < len(sessions) - 1:
+                selected += 1
+            elif key == ord('\n') and sessions:
+                curses.endwin()
+                sk.attach_session(sessions[selected]["name"])
+                curses.doupdate()
+            elif key == ord('k') and sessions:
+                session_name = sessions[selected]["name"]
+                sk.kill_session(session_name)
+                if selected > 0:
+                    selected -= 1
+
+    curses.wrapper(dashboard_main)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="ShellKeeper - Terminal session manager with native scrolling",
@@ -857,6 +1173,7 @@ Inside a session:
     create_parser.add_argument("name", nargs="?", help="Session name (auto-generated if not provided)")
     create_parser.add_argument("--profile", "-p", help="GNOME Terminal profile name or UUID")
     create_parser.add_argument("--match", "-m", action="store_true", help="Inherit current session's profile")
+    create_parser.add_argument("--template", "-t", help="Use a session template")
 
     # Attach to session
     attach_parser = subparsers.add_parser("attach", aliases=["a"], help="Attach to session")
@@ -909,6 +1226,7 @@ Inside a session:
     profiles_sub = profiles_parser.add_subparsers(dest="profiles_command")
     profiles_list = profiles_sub.add_parser("list", help="List profiles")
     profiles_default = profiles_sub.add_parser("default", help="Show default profile")
+    profiles_export = profiles_sub.add_parser("export", help="Export profiles to JSON")
 
     # Metadata subcommand
     metadata_parser = subparsers.add_parser("metadata", help="Manage session metadata")
@@ -928,6 +1246,17 @@ Inside a session:
 
     # Setup autostart
     autostart_parser = subparsers.add_parser("setup-autostart", help="Set up session restore on login")
+
+    # Doctor - health check
+    doctor_parser = subparsers.add_parser("doctor", help="Run health checks")
+
+    # Log - capture session output
+    log_parser = subparsers.add_parser("log", help="Capture session output to file")
+    log_parser.add_argument("name", help="Session name")
+    log_parser.add_argument("--output", "-o", help="Output file path (default: ~/.shellkeeper/logs/)")
+
+    # Dashboard - TUI
+    dashboard_parser = subparsers.add_parser("dashboard", help="Interactive session dashboard")
 
     args = parser.parse_args()
 
@@ -960,7 +1289,10 @@ Inside a session:
                 print(f"  {session['name']:<30}{profile_str:<20} ({time_str}){note_str}")
 
     elif args.command in ["new", "create"]:
-        sk.create_session(args.name, profile_name=args.profile, match_current=args.match)
+        if args.template:
+            sk.create_session_from_template(args.template, args.name)
+        else:
+            sk.create_session(args.name, profile_name=args.profile, match_current=args.match)
 
     elif args.command in ["attach", "a"]:
         sk.attach_session(args.name)
@@ -1082,6 +1414,10 @@ Inside a session:
             else:
                 print("Could not determine default profile")
 
+        elif args.profiles_command == "export":
+            export_data = GnomeProfiles.export_profiles()
+            print(json.dumps(export_data, indent=2))
+
         else:
             profiles_parser.print_help()
 
@@ -1151,6 +1487,40 @@ Inside a session:
 
     elif args.command == "setup-autostart":
         sk.setup_autostart()
+
+    elif args.command == "doctor":
+        checks = sk.doctor()
+        print("ShellKeeper Health Check")
+        print("=" * 40)
+
+        all_ok = True
+        for name, status, fix in checks:
+            if status is True:
+                print(f"  \033[32m✓\033[0m {name}")
+            elif status is False:
+                print(f"  \033[31m✗\033[0m {name}")
+                print(f"      Fix: {fix}")
+                all_ok = False
+            else:
+                print(f"  \033[33m-\033[0m {name} ({fix})")
+
+        print()
+        if all_ok:
+            print("\033[32mAll checks passed!\033[0m")
+        else:
+            print("\033[33mSome issues found. See fixes above.\033[0m")
+
+    elif args.command == "log":
+        output_file = args.output if hasattr(args, 'output') and args.output else None
+        sk.start_logging(args.name, output_file)
+
+    elif args.command == "dashboard":
+        try:
+            import curses
+            run_dashboard(sk)
+        except ImportError:
+            print("Error: curses module not available")
+            sys.exit(1)
 
     else:
         # If no command, show usage or attach to last session

@@ -57,6 +57,16 @@ case "$1" in
         shift
         python3 "$PYTHON_SCRIPT" cleanup "$@"
         ;;
+    doctor)
+        python3 "$PYTHON_SCRIPT" doctor
+        ;;
+    log)
+        shift
+        python3 "$PYTHON_SCRIPT" log "$@"
+        ;;
+    dashboard|dash)
+        python3 "$PYTHON_SCRIPT" dashboard
+        ;;
     t|term|terminal)
         shift
         python3 "$PYTHON_SCRIPT" terminal "$@"

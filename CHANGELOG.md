@@ -1,5 +1,34 @@
 # Changelog
 
+## v2.3.0 (2026-01-21)
+
+### New Features
+
+- **Health Check**: `sk doctor` verifies system configuration
+  - Checks dtach, jq, loginctl linger, autostart, GNOME profiles
+  - Shows fix commands for any issues found
+
+- **Session Logging**: Capture session output to files
+  - `sk log <session>` - Log to ~/.shellkeeper/logs/
+  - `sk log <session> --output=file.log` - Log to specific file
+
+- **Interactive Dashboard**: TUI for session management
+  - `sk dashboard` - Live view of all sessions
+  - Navigate, attach, kill sessions with keyboard
+
+- **Session Hooks**: Run scripts on session events
+  - Configure `on_create`, `on_attach`, `on_detach` in config.json
+  - Scripts receive `SK_SESSION` and `SK_HOOK` environment variables
+
+- **Session Templates**: Predefined session configurations
+  - `sk new --template=dev` - Create from template
+  - Templates can specify profile, startup command, working directory
+
+- **Profile Export**: Backup GNOME Terminal profiles
+  - `sk profiles export` - Export all profiles to JSON
+
+---
+
 ## v2.2.0 (2026-01-21)
 
 ### New Features
