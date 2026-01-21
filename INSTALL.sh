@@ -12,6 +12,14 @@ if [ ! -f "$SHELL_RC" ]; then
     SHELL_RC="$HOME/.bashrc"
 fi
 
+# Check if shell rc is writable, make it writable if needed
+MADE_WRITABLE=false
+if [ -f "$SHELL_RC" ] && [ ! -w "$SHELL_RC" ]; then
+    echo "Making $SHELL_RC writable..."
+    chmod u+w "$SHELL_RC"
+    MADE_WRITABLE=true
+fi
+
 echo "=== ShellKeeper Installation ==="
 echo ""
 
@@ -91,6 +99,12 @@ NoDisplay=false
 X-GNOME-Autostart-enabled=true
 EOF
     echo "  [OK] Autostart configured"
+fi
+
+# Restore original permissions if we changed them
+if [ "$MADE_WRITABLE" = true ]; then
+    echo "Restoring $SHELL_RC permissions..."
+    chmod u-w "$SHELL_RC"
 fi
 
 echo ""
