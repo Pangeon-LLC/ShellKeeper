@@ -1,24 +1,17 @@
 #!/bin/bash
 # ShellKeeper Installation Script
 # Safe to run multiple times - idempotent
+#
+# Note: Does NOT modify shell rc files. Add these to your .zshrc manually:
+#   export PATH="$PATH:/home/graham/tools/ShellKeeper/bin"
+#   source /home/graham/tools/ShellKeeper/lib/shellkeeper-aliases.sh
+#   if [ -n "$SHELLKEEPER_SESSION" ]; then
+#       source /home/graham/tools/ShellKeeper/bin/sk-prompt >/dev/null 2>&1
+#   fi
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SHELL_RC="$HOME/.zshrc"
-
-# Use bashrc if zshrc doesn't exist
-if [ ! -f "$SHELL_RC" ]; then
-    SHELL_RC="$HOME/.bashrc"
-fi
-
-# Check if shell rc is writable, make it writable if needed
-MADE_WRITABLE=false
-if [ -f "$SHELL_RC" ] && [ ! -w "$SHELL_RC" ]; then
-    echo "Making $SHELL_RC writable..."
-    chmod u+w "$SHELL_RC"
-    MADE_WRITABLE=true
-fi
 
 echo "=== ShellKeeper Installation ==="
 echo ""
@@ -54,34 +47,8 @@ if [ "$(uname)" = "Linux" ]; then
     fi
 fi
 
-# 3. Add to PATH
-echo "Checking PATH in $SHELL_RC..."
-if grep -q "ShellKeeper/bin" "$SHELL_RC" 2>/dev/null; then
-    echo "  [OK] PATH already configured"
-else
-    echo "" >> "$SHELL_RC"
-    echo "# ShellKeeper" >> "$SHELL_RC"
-    echo "export PATH=\"\$PATH:$SCRIPT_DIR/bin\"" >> "$SHELL_RC"
-    echo "  [OK] Added to PATH"
-fi
-
-# 4. Set up prompt (setup-sk-prompt.sh is already idempotent)
-echo "Setting up automatic prompt..."
-"$SCRIPT_DIR/lib/setup-sk-prompt.sh"
-
-# 5. Add aliases
-echo "Checking aliases in $SHELL_RC..."
-if grep -q "shellkeeper-aliases.sh" "$SHELL_RC" 2>/dev/null; then
-    echo "  [OK] Aliases already configured"
-else
-    echo "" >> "$SHELL_RC"
-    echo "# ShellKeeper aliases" >> "$SHELL_RC"
-    echo "source \"$SCRIPT_DIR/lib/shellkeeper-aliases.sh\"" >> "$SHELL_RC"
-    echo "  [OK] Added aliases"
-fi
-
-# 6. Set up autostart
-echo "Setting up GNOME autostart..."
+# 3. Set up autostart
+echo "Checking GNOME autostart..."
 AUTOSTART_DIR="$HOME/.config/autostart"
 AUTOSTART_FILE="$AUTOSTART_DIR/shellkeeper.desktop"
 if [ -f "$AUTOSTART_FILE" ]; then
@@ -101,21 +68,15 @@ EOF
     echo "  [OK] Autostart configured"
 fi
 
-# Restore original permissions if we changed them
-if [ "$MADE_WRITABLE" = true ]; then
-    echo "Restoring $SHELL_RC permissions..."
-    chmod u-w "$SHELL_RC"
-fi
-
 echo ""
 echo "=== Installation Complete ==="
 echo ""
-echo "Reload your shell to activate:"
-echo "  exec \$SHELL"
+echo "Add these lines to your .zshrc:"
 echo ""
-echo "Then try:"
-echo "  sk new                          # Create a session"
-echo "  sk profiles list                # See GNOME Terminal profiles"
-echo "  sk new --profile=\"ProfileName\"  # Create with specific profile"
+echo "  export PATH=\"\$PATH:$SCRIPT_DIR/bin\""
+echo "  source $SCRIPT_DIR/lib/shellkeeper-aliases.sh"
+echo "  if [ -n \"\$SHELLKEEPER_SESSION\" ]; then"
+echo "      source $SCRIPT_DIR/bin/sk-prompt >/dev/null 2>&1"
+echo "  fi"
 echo ""
-echo "Remember: Detach with Ctrl+\\ (not Ctrl+C)"
+echo "Then: exec \$SHELL"
