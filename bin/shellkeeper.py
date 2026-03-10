@@ -1332,7 +1332,7 @@ class ShellKeeper:
 
             # Open a terminal window for the session with geometry
             import time
-            time.sleep(0.3)  # Brief delay for dtach to start
+            time.sleep(1)  # Wait for dtach to fully start
 
             geometry = state.get('window_geometry')
             sk_path_str = str(Path(__file__).parent / "sk")
@@ -1349,8 +1349,13 @@ class ShellKeeper:
                 term_cmd.append(f"--geometry={cols}x{rows}+{geometry.get('x', 0)}+{geometry.get('y', 0)}")
             term_cmd.extend(["--", sk_path_str, "attach", name])
 
-            subprocess.Popen(term_cmd, start_new_session=True)
-            print(f"Restoring session: {name}")
+            try:
+                subprocess.Popen(term_cmd, start_new_session=True,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                print(f"  Opened terminal window")
+            except Exception as e:
+                print(f"  Warning: could not open terminal window: {e}")
+                print(f"  Session is running detached. Attach with: sk attach {name}")
 
             # Delete the state file after successful restore
             try:
