@@ -70,6 +70,28 @@ sk_auto() {
     fi
 }
 
+# Profile detection hook - runs once per shell to detect GNOME Terminal profile
+__sk_detect_profile_once() {
+    [[ -n "$__SK_PROFILE_DETECTED" ]] && return
+    __SK_PROFILE_DETECTED=1
+    [[ -z "$SHELLKEEPER_SESSION" ]] && return
+    # Run in background to not delay prompt
+    (sk-detect-profile &>/dev/null &)
+}
+
+# Install the hook
+if [ -n "$ZSH_VERSION" ]; then
+    precmd_functions+=(__sk_detect_profile_once)
+elif [ -n "$BASH_VERSION" ]; then
+    if [[ "$PROMPT_COMMAND" == *"__sk_detect_profile_once"* ]]; then
+        : # already installed
+    elif [ -n "$PROMPT_COMMAND" ]; then
+        PROMPT_COMMAND="__sk_detect_profile_once;$PROMPT_COMMAND"
+    else
+        PROMPT_COMMAND="__sk_detect_profile_once"
+    fi
+fi
+
 # Show reminder when sourced (unless silent mode)
 if [ -z "$SK_SILENT" ]; then
     echo "ShellKeeper aliases loaded. Type 'skhelp' for commands."

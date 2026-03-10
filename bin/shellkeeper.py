@@ -19,6 +19,7 @@ import random
 import string
 import re
 import fnmatch
+import socket
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -291,6 +292,8 @@ class ShellKeeper:
         self.config_file = Path.home() / ".shellkeeper" / "config.json"
         self.metadata_file = Path.home() / ".shellkeeper" / "metadata.json"
         self.metadata = SessionMetadata(self.metadata_file)
+        self.states_dir = Path.home() / ".shellkeeper" / "states"
+        self.states_dir.mkdir(parents=True, exist_ok=True)
         self.load_config()
         self.backend = self.detect_backend()
 
@@ -1009,6 +1012,401 @@ class ShellKeeper:
             print(f"Profile: {profile_name}")
         return session_name
 
+    def _find_shell_pid_for_session(self, session_name):
+        """Find the shell PID for a given session by scanning /proc/*/environ"""
+        shells = {'bash', 'zsh', 'fish', 'sh'}
+        proc = Path('/proc')
+        for pid_dir in proc.iterdir():
+            if not pid_dir.name.isdigit():
+                continue
+            try:
+                environ_path = pid_dir / 'environ'
+                environ_data = environ_path.read_bytes()
+                target = f'SHELLKEEPER_SESSION={session_name}\0'.encode()
+                if target not in environ_data:
+                    continue
+                # Check if this is a shell process
+                cmdline = (pid_dir / 'cmdline').read_bytes().split(b'\0')[0]
+                exe_name = os.path.basename(cmdline.decode('utf-8', errors='replace'))
+                # Strip leading dash for login shells (e.g., -zsh)
+                if exe_name.startswith('-'):
+                    exe_name = exe_name[1:]
+                if exe_name in shells:
+                    return int(pid_dir.name)
+            except (PermissionError, FileNotFoundError, OSError):
+                continue
+        return None
+
+    def _read_proc_environ(self, pid):
+        """Read and parse environment variables from /proc/<pid>/environ"""
+        keep_vars = {
+            'VIRTUAL_ENV', 'NODE_ENV', 'CONDA_DEFAULT_ENV', 'GOPATH',
+            'CARGO_HOME', 'RUSTUP_HOME', 'JAVA_HOME',
+            'SK_PROFILE_NAME', 'SK_PROFILE_UUID',
+        }
+        result = {}
+        try:
+            data = Path(f'/proc/{pid}/environ').read_bytes()
+            for entry in data.split(b'\0'):
+                if not entry:
+                    continue
+                decoded = entry.decode('utf-8', errors='replace')
+                if '=' in decoded:
+                    key, value = decoded.split('=', 1)
+                    if key in keep_vars:
+                        result[key] = value
+        except (PermissionError, FileNotFoundError, OSError):
+            pass
+        return result
+
+    def _find_awsm_geometry(self, session_name, session_cwd, shell_pid):
+        """Find window geometry from AWSM session data for a given SK session."""
+        awsm_dir = Path.home() / ".config" / "another-window-session-manager" / "currentSession" / "gnome-terminal-server"
+        if not awsm_dir.is_dir():
+            return None
+
+        try:
+            awsm_windows = []
+            for json_file in awsm_dir.glob("*.json"):
+                try:
+                    with open(json_file) as f:
+                        data = json.load(f)
+                    awsm_windows.append(data)
+                except (json.JSONDecodeError, IOError):
+                    continue
+
+            if not awsm_windows:
+                return None
+
+            # Strategy 1: Match by CWD in window title
+            if session_cwd:
+                # Window titles often contain CWD like "graham@host:~/tools/project"
+                home = str(Path.home())
+                for win in awsm_windows:
+                    title = win.get("window_title", "")
+                    # Check if the CWD appears in the title (as full path or ~/... form)
+                    cwd_tilde = session_cwd.replace(home, "~", 1) if session_cwd.startswith(home) else session_cwd
+                    if session_cwd in title or cwd_tilde in title:
+                        return self._extract_geometry(win)
+
+            # Strategy 2: Match by pid ancestry
+            if shell_pid:
+                # Walk up the parent chain from the shell pid to find the gnome-terminal-server pid
+                try:
+                    pid = shell_pid
+                    ancestors = set()
+                    for _ in range(10):  # max depth
+                        ancestors.add(pid)
+                        stat_path = f"/proc/{pid}/stat"
+                        with open(stat_path) as f:
+                            parts = f.read().split(')')[-1].split()
+                            ppid = int(parts[1])  # 4th field overall, 2nd after ')'
+                        if ppid <= 1:
+                            break
+                        pid = ppid
+                except (FileNotFoundError, ValueError, IndexError, OSError):
+                    ancestors = set()
+
+                for win in awsm_windows:
+                    awsm_pid = win.get("pid")
+                    if awsm_pid and awsm_pid in ancestors:
+                        return self._extract_geometry(win)
+
+        except OSError:
+            pass
+
+        return None
+
+    def _extract_geometry(self, awsm_data):
+        """Extract geometry dict from AWSM window data."""
+        pos = awsm_data.get("window_position", {})
+        state = awsm_data.get("window_state", {})
+        if not pos:
+            return None
+        return {
+            "width": pos.get("width", 800),
+            "height": pos.get("height", 600),
+            "x": pos.get("x_offset", 0),
+            "y": pos.get("y_offset", 0),
+            "maximized": state.get("meta_maximized", 0) == 3,
+        }
+
+    def save_session_state(self, session_name=None):
+        """Save state of a session (or all active sessions) to state files"""
+        sessions = self.list_sessions(clean_dead=True)
+        if not sessions:
+            return 0
+
+        if session_name:
+            sessions = [s for s in sessions if s['name'] == session_name]
+            if not sessions:
+                print(f"No active session named '{session_name}'")
+                return 0
+
+        count = 0
+        for session in sessions:
+            name = session['name']
+            pid = self._find_shell_pid_for_session(name)
+            if pid is None:
+                continue
+
+            # Read cwd
+            try:
+                cwd = os.readlink(f'/proc/{pid}/cwd')
+            except (PermissionError, FileNotFoundError, OSError):
+                cwd = None
+
+            # Read selected env vars
+            env_vars = self._read_proc_environ(pid)
+
+            # Get profile info from metadata
+            meta = self.metadata.get(name)
+            profile_name = env_vars.pop('SK_PROFILE_NAME', None) or meta.get('profile_name')
+            profile_uuid = env_vars.pop('SK_PROFILE_UUID', None) or meta.get('profile_uuid')
+
+            # Try to find window geometry from AWSM session data
+            window_geometry = self._find_awsm_geometry(name, cwd, pid)
+
+            state = {
+                'session_name': name,
+                'cwd': cwd,
+                'profile_name': profile_name,
+                'profile_uuid': profile_uuid,
+                'env': env_vars,
+                'window_geometry': window_geometry,
+                'timestamp': datetime.now().isoformat(),
+                'hostname': socket.gethostname(),
+            }
+
+            state_file = self.states_dir / f'{name}.json'
+            with open(state_file, 'w') as f:
+                json.dump(state, f, indent=2)
+            count += 1
+
+        return count
+
+    def save_all_states(self):
+        """Save state of all active sessions"""
+        return self.save_session_state()
+
+    def list_saved_states(self):
+        """List saved state files"""
+        states = []
+        for state_file in sorted(self.states_dir.glob('*.json')):
+            try:
+                with open(state_file) as f:
+                    data = json.load(f)
+                states.append({
+                    'name': data.get('session_name', state_file.stem),
+                    'cwd': data.get('cwd'),
+                    'profile_name': data.get('profile_name'),
+                    'timestamp': data.get('timestamp'),
+                    'hostname': data.get('hostname'),
+                })
+            except (json.JSONDecodeError, IOError):
+                continue
+        return states
+
+    def restore_from_state(self, state_name=None):
+        """Restore sessions from saved state files"""
+        current_hostname = socket.gethostname()
+        active_sessions = {s['name'] for s in self.list_sessions(clean_dead=True)}
+
+        if state_name:
+            state_files = [self.states_dir / f'{state_name}.json']
+        else:
+            state_files = list(self.states_dir.glob('*.json'))
+
+        restored = 0
+        for state_file in state_files:
+            if not state_file.exists():
+                print(f"State file not found: {state_file.stem}")
+                continue
+
+            try:
+                with open(state_file) as f:
+                    state = json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                print(f"Error reading state file {state_file.stem}: {e}")
+                continue
+
+            name = state.get('session_name', state_file.stem)
+
+            # Skip if hostname doesn't match
+            if state.get('hostname') and state['hostname'] != current_hostname:
+                print(f"Skipping '{name}' (different host: {state['hostname']})")
+                continue
+
+            # Skip if session already active
+            if name in active_sessions:
+                print(f"Skipping '{name}' (already active)")
+                continue
+
+            cwd = state.get('cwd')
+            profile_name = state.get('profile_name')
+            profile_uuid = state.get('profile_uuid')
+
+            # Build startup command to restore env vars
+            env_commands = []
+            for key, value in state.get('env', {}).items():
+                # Shell-escape the value
+                escaped = value.replace("'", "'\\''")
+                env_commands.append(f"export {key}='{escaped}'")
+
+            startup_cmd = '; '.join(env_commands) if env_commands else None
+
+            # Create the session (non-interactive - use dtach -n)
+            socket_path = self.get_socket_path(name)
+            if socket_path.exists():
+                continue
+
+            # Save metadata
+            self.metadata.set(name, profile_name, profile_uuid)
+
+            # Set environment variables
+            env = os.environ.copy()
+            env['SHELLKEEPER_SESSION'] = name
+            env['SHELLKEEPER_SOCKET'] = str(socket_path)
+            keepalive_config = self.config.get('keepalive', {})
+            env['SK_KEEPALIVE_ENABLED'] = str(keepalive_config.get('enabled', True)).lower()
+            env['SK_KEEPALIVE_INTERVAL'] = str(keepalive_config.get('interval', 60))
+            if profile_name:
+                env['SK_PROFILE_NAME'] = profile_name
+            if profile_uuid:
+                env['SK_PROFILE_UUID'] = profile_uuid
+
+            # Create wrapper script
+            wrapper_lines = [
+                "#!/bin/bash",
+                f'export SHELLKEEPER_SESSION="{name}"',
+                f'export SHELLKEEPER_SOCKET="{socket_path}"',
+                f'export SK_KEEPALIVE_ENABLED="{env["SK_KEEPALIVE_ENABLED"]}"',
+                f'export SK_KEEPALIVE_INTERVAL="{env["SK_KEEPALIVE_INTERVAL"]}"',
+                f'export SK_PROFILE_NAME="{profile_name or ""}"',
+                f'export SK_PROFILE_UUID="{profile_uuid or ""}"',
+            ]
+
+            if cwd and os.path.isdir(cwd):
+                wrapper_lines.append(f'cd "{cwd}"')
+
+            if startup_cmd:
+                wrapper_lines.append(startup_cmd)
+
+            wrapper_lines.append(f'exec {self.config["default_shell"]}')
+            wrapper_script = "\n".join(wrapper_lines) + "\n"
+
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+                f.write(wrapper_script)
+                wrapper_path = f.name
+
+            os.chmod(wrapper_path, 0o755)
+
+            # Create detached session with dtach -n (no attach)
+            cmd = [
+                "dtach", "-n", str(socket_path),
+                "-r", "winch",
+                wrapper_path
+            ]
+
+            try:
+                subprocess.run(cmd, env=env, check=True)
+            except subprocess.CalledProcessError as e:
+                print(f"Failed to create session '{name}': {e}")
+                try:
+                    os.unlink(wrapper_path)
+                except OSError:
+                    pass
+                continue
+
+            # Note: wrapper_path will be cleaned up by the shell after exec,
+            # but we can't delete it immediately since dtach -n returns right away
+            # and the shell hasn't started yet. Schedule cleanup after a delay.
+            # For simplicity, leave it - tempfiles are cleaned on reboot anyway.
+
+            print(f"Restored session: {name}")
+            if profile_name:
+                print(f"  Profile: {profile_name}")
+            if cwd:
+                print(f"  Directory: {cwd}")
+
+            # Open a terminal window for the session with geometry
+            import time
+            time.sleep(0.3)  # Brief delay for dtach to start
+
+            geometry = state.get('window_geometry')
+            sk_path_str = str(Path(__file__).parent / "sk")
+
+            term_cmd = ["gnome-terminal"]
+            if profile_uuid and GnomeProfiles.is_available():
+                term_cmd.append(f"--profile={profile_uuid}")
+            term_cmd.extend(["--title", f"SK: {name}"])
+            if geometry and geometry.get('maximized'):
+                term_cmd.append("--maximize")
+            elif geometry:
+                cols = max(80, geometry['width'] // 8)
+                rows = max(24, geometry['height'] // 18)
+                term_cmd.append(f"--geometry={cols}x{rows}+{geometry.get('x', 0)}+{geometry.get('y', 0)}")
+            term_cmd.extend(["--", sk_path_str, "attach", name])
+
+            subprocess.Popen(term_cmd, start_new_session=True)
+            print(f"Restoring session: {name}")
+
+            # Delete the state file after successful restore
+            try:
+                state_file.unlink()
+            except OSError:
+                pass
+
+            restored += 1
+            active_sessions.add(name)
+            time.sleep(0.5)  # Delay between windows
+
+        return restored
+
+    def check_reboot_states(self):
+        """Check for state files older than system boot time"""
+        state_files = list(self.states_dir.glob('*.json'))
+        if not state_files:
+            return []
+
+        # Get system boot time
+        try:
+            with open('/proc/stat') as f:
+                for line in f:
+                    if line.startswith('btime '):
+                        boot_time = datetime.fromtimestamp(int(line.split()[1]))
+                        break
+                else:
+                    return []
+        except (IOError, ValueError):
+            return []
+
+        pre_boot = []
+        for state_file in state_files:
+            try:
+                with open(state_file) as f:
+                    data = json.load(f)
+                ts = data.get('timestamp')
+                if ts:
+                    state_time = datetime.fromisoformat(ts)
+                    if state_time < boot_time:
+                        pre_boot.append(data)
+            except (json.JSONDecodeError, IOError, ValueError):
+                continue
+
+        if pre_boot:
+            print(f"Found {len(pre_boot)} session(s) saved before last reboot:")
+            for state in pre_boot:
+                name = state.get('session_name', '?')
+                cwd = state.get('cwd', '?')
+                profile = state.get('profile_name', '')
+                profile_str = f" [{profile}]" if profile else ""
+                print(f"  {name}{profile_str} - {cwd}")
+            print(f"\nRestore with: sk state restore")
+
+        return pre_boot
+
     def setup_autostart(self):
         """Set up autostart for session restoration"""
         autostart_dir = Path.home() / ".config" / "autostart"
@@ -1257,6 +1655,17 @@ Inside a session:
 
     # Dashboard - TUI
     dashboard_parser = subparsers.add_parser("dashboard", help="Interactive session dashboard")
+
+    # State subcommand (reboot persistence)
+    state_parser = subparsers.add_parser("state", help="Manage session state for reboot persistence")
+    state_sub = state_parser.add_subparsers(dest="state_command")
+    state_save = state_sub.add_parser("save", help="Save session state")
+    state_save.add_argument("name", nargs="?", help="Session name (all if not provided)")
+    state_list = state_sub.add_parser("list", help="List saved states")
+    state_restore = state_sub.add_parser("restore", help="Restore sessions from saved state")
+    state_restore.add_argument("name", nargs="?", help="Session name (all if not provided)")
+    state_clean = state_sub.add_parser("clean", help="Remove state files older than 30 days")
+    state_check = state_sub.add_parser("check", help="Check for pre-reboot states")
 
     args = parser.parse_args()
 
@@ -1521,6 +1930,53 @@ Inside a session:
         except ImportError:
             print("Error: curses module not available")
             sys.exit(1)
+
+    elif args.command == "state":
+        if args.state_command == "save":
+            count = sk.save_session_state(args.name)
+            print(f"Saved state for {count} session(s)")
+
+        elif args.state_command == "list":
+            states = sk.list_saved_states()
+            if states:
+                print("Saved session states:")
+                for s in states:
+                    profile_str = f" [{s['profile_name']}]" if s.get('profile_name') else ""
+                    ts = relative_time(s['timestamp']) if s.get('timestamp') else "unknown"
+                    host = f" @{s['hostname']}" if s.get('hostname') else ""
+                    print(f"  {s['name']:<30}{profile_str:<20} {s.get('cwd', '?'):<40} ({ts}){host}")
+            else:
+                print("No saved states")
+
+        elif args.state_command == "restore":
+            restored = sk.restore_from_state(args.name)
+            if restored:
+                print(f"\nRestored {restored} session(s)")
+            else:
+                print("No sessions to restore")
+
+        elif args.state_command == "clean":
+            cutoff = datetime.now() - timedelta(days=30)
+            removed = 0
+            for state_file in sk.states_dir.glob('*.json'):
+                try:
+                    with open(state_file) as f:
+                        data = json.load(f)
+                    ts = data.get('timestamp')
+                    if ts and datetime.fromisoformat(ts) < cutoff:
+                        state_file.unlink()
+                        removed += 1
+                except (json.JSONDecodeError, IOError, ValueError):
+                    continue
+            print(f"Removed {removed} state file(s) older than 30 days")
+
+        elif args.state_command == "check":
+            states = sk.check_reboot_states()
+            if not states:
+                print("No pre-reboot states found")
+
+        else:
+            state_parser.print_help()
 
     else:
         # If no command, show usage or attach to last session

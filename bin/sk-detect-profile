@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""
+Detect the GNOME Terminal profile of the current terminal by querying
+its background color via OSC 11, then matching against known profiles.
+Updates ShellKeeper metadata if running inside an SK session.
+"""
+
+import os
+import sys
+import json
+import signal
+import subprocess
+import termios
+import tty
+from pathlib import Path
+
+
+def query_background_color(timeout=1.0):
+    """Query terminal background color via OSC 11. Returns (r, g, b) as 8-bit values."""
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        # Send OSC 11 query
+        os.write(sys.stdout.fileno(), b'\033]11;?\007')
+
+        # Read response with timeout
+        import select
+        response = b''
+        deadline = __import__('time').time() + timeout
+        while True:
+            remaining = deadline - __import__('time').time()
+            if remaining <= 0:
+                return None
+            ready, _, _ = select.select([fd], [], [], remaining)
+            if not ready:
+                return None
+            ch = os.read(fd, 1)
+            response += ch
+            # Response ends with BEL (\007) or ST (\033\\)
+            if ch == b'\007' and len(response) > 1:
+                break
+            if response.endswith(b'\033\\'):
+                break
+            if len(response) > 200:
+                return None
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+    # Parse: \033]11;rgb:RRRR/GGGG/BBBB\007
+    try:
+        text = response.decode('latin-1')
+        # Find the rgb: part
+        idx = text.find('rgb:')
+        if idx < 0:
+            return None
+        rgb_part = text[idx + 4:].rstrip('\007').rstrip('\\').rstrip('\033')
+        parts = rgb_part.split('/')
+        if len(parts) != 3:
+            return None
+        # Convert 16-bit (or other width) hex to 8-bit
+        result = []
+        for p in parts:
+            val = int(p, 16)
+            if len(p) == 4:
+                val = val >> 8  # 16-bit to 8-bit
+            elif len(p) == 2:
+                pass  # already 8-bit
+            elif len(p) == 1:
+                val = val * 17  # 4-bit to 8-bit
+            else:
+                val = val >> (4 * (len(p) - 2))
+            result.append(val)
+        return tuple(result)
+    except (ValueError, IndexError):
+        return None
+
+
+def get_profile_colors():
+    """Get all GNOME Terminal profiles with their background colors.
+    Returns list of (name, uuid, (r, g, b))."""
+    DCONF_PATH = "/org/gnome/terminal/legacy/profiles:/"
+    profiles = []
+    try:
+        result = subprocess.run(
+            ["gsettings", "get", "org.gnome.Terminal.ProfilesList", "list"],
+            capture_output=True, text=True, check=True
+        )
+        uuid_str = result.stdout.strip()
+        if not (uuid_str.startswith('[') and uuid_str.endswith(']')):
+            return profiles
+        uuid_list = uuid_str[1:-1].replace("'", "").replace(" ", "").split(",")
+        uuid_list = [u for u in uuid_list if u]
+
+        for uuid in uuid_list:
+            try:
+                name_result = subprocess.run(
+                    ["gsettings", "get",
+                     f"org.gnome.Terminal.Legacy.Profile:{DCONF_PATH}:{uuid}/",
+                     "visible-name"],
+                    capture_output=True, text=True, check=True
+                )
+                name = name_result.stdout.strip().strip("'")
+
+                bg_result = subprocess.run(
+                    ["gsettings", "get",
+                     f"org.gnome.Terminal.Legacy.Profile:{DCONF_PATH}:{uuid}/",
+                     "background-color"],
+                    capture_output=True, text=True, check=True
+                )
+                bg_str = bg_result.stdout.strip().strip("'")
+                # Parse 'rgb(R,G,B)' or '#RRGGBB'
+                rgb = parse_color(bg_str)
+                if rgb:
+                    profiles.append((name, uuid, rgb))
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                continue
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    return profiles
+
+
+def parse_color(color_str):
+    """Parse 'rgb(R,G,B)' or '#RRGGBB' to (r, g, b) tuple."""
+    import re
+    m = re.match(r"rgb\((\d+),\s*(\d+),\s*(\d+)\)", color_str)
+    if m:
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    m = re.match(r"#([0-9a-fA-F]{6})", color_str)
+    if m:
+        h = m.group(1)
+        return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+    return None
+
+
+def color_distance(c1, c2):
+    """Euclidean distance in RGB space."""
+    return sum((a - b) ** 2 for a, b in zip(c1, c2)) ** 0.5
+
+
+def update_metadata(session_name, profile_name, profile_uuid):
+    """Update ShellKeeper metadata with detected profile."""
+    metadata_file = Path.home() / ".shellkeeper" / "metadata.json"
+    try:
+        if metadata_file.exists():
+            with open(metadata_file) as f:
+                data = json.load(f)
+        else:
+            data = {}
+
+        if session_name not in data:
+            data[session_name] = {}
+
+        # Only set if not already set
+        if data[session_name].get('profile_name') and data[session_name].get('profile_uuid'):
+            return
+
+        data[session_name]['profile_name'] = profile_name
+        data[session_name]['profile_uuid'] = profile_uuid
+
+        with open(metadata_file, 'w') as f:
+            json.dump(data, f, indent=2)
+    except (json.JSONDecodeError, IOError, OSError):
+        pass
+
+
+def main():
+    session_name = os.environ.get('SHELLKEEPER_SESSION')
+    if not session_name:
+        sys.exit(0)
+
+    # Don't run if not a terminal
+    if not os.isatty(sys.stdin.fileno()):
+        sys.exit(0)
+
+    # Set alarm to avoid hanging
+    signal.signal(signal.SIGALRM, lambda *a: sys.exit(0))
+    signal.alarm(3)
+
+    bg_color = query_background_color(timeout=1.0)
+    if not bg_color:
+        sys.exit(0)
+
+    profiles = get_profile_colors()
+    if not profiles:
+        sys.exit(0)
+
+    # Find closest match
+    best_name, best_uuid, best_dist = None, None, float('inf')
+    for name, uuid, rgb in profiles:
+        d = color_distance(bg_color, rgb)
+        if d < best_dist:
+            best_name, best_uuid, best_dist = name, uuid, d
+
+    if best_name and best_dist < 30:  # Reasonable threshold
+        update_metadata(session_name, best_name, best_uuid)
+        print(best_name)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (Exception, KeyboardInterrupt):
+        sys.exit(0)

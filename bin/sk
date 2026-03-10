@@ -90,6 +90,10 @@ case "$1" in
         shift
         python3 "$PYTHON_SCRIPT" config "$@"
         ;;
+    state)
+        shift
+        python3 "$PYTHON_SCRIPT" state "$@"
+        ;;
     setup-autostart)
         python3 "$PYTHON_SCRIPT" setup-autostart
         ;;
