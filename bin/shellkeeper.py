@@ -1208,135 +1208,60 @@ class ShellKeeper:
         return states
 
     def restore_from_state(self, state_name=None):
-        """Restore sessions from saved state files"""
+        """Restore sessions by opening terminal windows that consume saved states.
+
+        Each terminal window starts a shell whose .zshrc auto-session picks up
+        a saved state file (name, cwd, env) instead of creating a fresh session.
+        This approach is more reliable than creating dtach sessions externally,
+        because the shell runs in a real terminal from the start.
+        """
+        import time
         current_hostname = socket.gethostname()
-        active_sessions = {s['name'] for s in self.list_sessions(clean_dead=True)}
 
         if state_name:
             state_files = [self.states_dir / f'{state_name}.json']
         else:
-            state_files = list(self.states_dir.glob('*.json'))
+            state_files = sorted(self.states_dir.glob('*.json'))
 
-        restored = 0
+        # Filter to restorable states
+        to_restore = []
         for state_file in state_files:
             if not state_file.exists():
-                print(f"State file not found: {state_file.stem}")
                 continue
-
             try:
                 with open(state_file) as f:
                     state = json.load(f)
-            except (json.JSONDecodeError, IOError) as e:
-                print(f"Error reading state file {state_file.stem}: {e}")
+            except (json.JSONDecodeError, IOError):
                 continue
 
             name = state.get('session_name', state_file.stem)
-
-            # Skip if hostname doesn't match
             if state.get('hostname') and state['hostname'] != current_hostname:
                 print(f"Skipping '{name}' (different host: {state['hostname']})")
                 continue
 
-            # Skip if session already active
-            if name in active_sessions:
-                print(f"Skipping '{name}' (already active)")
-                continue
+            to_restore.append((state_file, state))
 
-            cwd = state.get('cwd')
-            profile_name = state.get('profile_name')
+        if not to_restore:
+            print("No sessions to restore")
+            return 0
+
+        # The first state will be consumed by the terminal that AWSM already
+        # opened (its .zshrc will pick it up). Open additional terminal windows
+        # for the remaining states — each window's .zshrc consumes the next state.
+        restored = 0
+        for i, (state_file, state) in enumerate(to_restore):
+            name = state.get('session_name', state_file.stem)
+            cwd = state.get('cwd', '')
             profile_uuid = state.get('profile_uuid')
-
-            # Build startup command to restore env vars
-            env_commands = []
-            for key, value in state.get('env', {}).items():
-                # Shell-escape the value
-                escaped = value.replace("'", "'\\''")
-                env_commands.append(f"export {key}='{escaped}'")
-
-            startup_cmd = '; '.join(env_commands) if env_commands else None
-
-            # Create the session (non-interactive - use dtach -n)
-            socket_path = self.get_socket_path(name)
-            if socket_path.exists():
-                continue
-
-            # Save metadata
-            self.metadata.set(name, profile_name, profile_uuid)
-
-            # Set environment variables
-            env = os.environ.copy()
-            env['SHELLKEEPER_SESSION'] = name
-            env['SHELLKEEPER_SOCKET'] = str(socket_path)
-            keepalive_config = self.config.get('keepalive', {})
-            env['SK_KEEPALIVE_ENABLED'] = str(keepalive_config.get('enabled', True)).lower()
-            env['SK_KEEPALIVE_INTERVAL'] = str(keepalive_config.get('interval', 60))
-            if profile_name:
-                env['SK_PROFILE_NAME'] = profile_name
-            if profile_uuid:
-                env['SK_PROFILE_UUID'] = profile_uuid
-
-            # Create wrapper script
-            wrapper_lines = [
-                "#!/bin/bash",
-                f'export SHELLKEEPER_SESSION="{name}"',
-                f'export SHELLKEEPER_SOCKET="{socket_path}"',
-                f'export SK_KEEPALIVE_ENABLED="{env["SK_KEEPALIVE_ENABLED"]}"',
-                f'export SK_KEEPALIVE_INTERVAL="{env["SK_KEEPALIVE_INTERVAL"]}"',
-                f'export SK_PROFILE_NAME="{profile_name or ""}"',
-                f'export SK_PROFILE_UUID="{profile_uuid or ""}"',
-            ]
-
-            if cwd and os.path.isdir(cwd):
-                wrapper_lines.append(f'cd "{cwd}"')
-
-            if startup_cmd:
-                wrapper_lines.append(startup_cmd)
-
-            wrapper_lines.append(f'exec {self.config["default_shell"]}')
-            wrapper_script = "\n".join(wrapper_lines) + "\n"
-
-            import tempfile
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
-                f.write(wrapper_script)
-                wrapper_path = f.name
-
-            os.chmod(wrapper_path, 0o755)
-
-            # Create detached session with dtach -n (no attach)
-            cmd = [
-                "dtach", "-n", str(socket_path),
-                "-r", "winch",
-                wrapper_path
-            ]
-
-            try:
-                subprocess.run(cmd, env=env, check=True)
-            except subprocess.CalledProcessError as e:
-                print(f"Failed to create session '{name}': {e}")
-                try:
-                    os.unlink(wrapper_path)
-                except OSError:
-                    pass
-                continue
-
-            # Note: wrapper_path will be cleaned up by the shell after exec,
-            # but we can't delete it immediately since dtach -n returns right away
-            # and the shell hasn't started yet. Schedule cleanup after a delay.
-            # For simplicity, leave it - tempfiles are cleaned on reboot anyway.
-
-            print(f"Restored session: {name}")
-            if profile_name:
-                print(f"  Profile: {profile_name}")
-            if cwd:
-                print(f"  Directory: {cwd}")
-
-            # Open a terminal window for the session with geometry
-            import time
-            time.sleep(1)  # Wait for dtach to fully start
-
             geometry = state.get('window_geometry')
-            sk_path_str = str(Path(__file__).parent / "sk")
 
+            if i == 0:
+                # First state: leave for AWSM-restored terminal's .zshrc
+                print(f"State ready for next terminal: {name} ({cwd})")
+                restored += 1
+                continue
+
+            # Open a new terminal window — .zshrc will consume the next state file
             term_cmd = ["gnome-terminal"]
             if profile_uuid and GnomeProfiles.is_available():
                 term_cmd.append(f"--profile={profile_uuid}")
@@ -1347,26 +1272,18 @@ class ShellKeeper:
                 cols = max(80, geometry['width'] // 8)
                 rows = max(24, geometry['height'] // 18)
                 term_cmd.append(f"--geometry={cols}x{rows}+{geometry.get('x', 0)}+{geometry.get('y', 0)}")
-            term_cmd.extend(["--", sk_path_str, "attach", name])
 
             try:
                 subprocess.Popen(term_cmd, start_new_session=True,
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                print(f"  Opened terminal window")
+                print(f"Opened terminal for: {name} ({cwd})")
+                restored += 1
             except Exception as e:
-                print(f"  Warning: could not open terminal window: {e}")
-                print(f"  Session is running detached. Attach with: sk attach {name}")
+                print(f"Warning: could not open terminal for '{name}': {e}")
 
-            # Delete the state file after successful restore
-            try:
-                state_file.unlink()
-            except OSError:
-                pass
+            time.sleep(1)  # Let each terminal start and consume its state
 
-            restored += 1
-            active_sessions.add(name)
-            time.sleep(0.5)  # Delay between windows
-
+        print(f"\nRestored {restored} session(s)")
         return restored
 
     def check_reboot_states(self):
